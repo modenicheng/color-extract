@@ -1,14 +1,10 @@
-[workspace]
-members = ["dct-extract"]
-resolver = "2"
-
 [package]
-name = "color-extract"
+name = "dct-extract"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-image = { version = "0.25", default-features = false, features = ["jpeg", "rayon"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "rayon"] }
 palette = "0.7"
 linfa = "0.8"
 linfa-clustering = "0.8"
@@ -19,6 +15,3 @@ rand = "0.8"
 rand_xoshiro = "0.6"
 base64 = "0.22"
 anyhow = "1"
-
-[dev-dependencies]
-tempfile = "3"
