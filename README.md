@@ -6,7 +6,38 @@
 |-------|------|
 | **`dct-extract`** | DCT 增强颜色提取 —— 结合 DCT 纹理复杂度和空间信息的高级评分系统 |
 | **`lab-gradient`** | LAB 空间 Sobel 梯度可视化 —— 将三通道梯度映射到 RGB 单图 |
+| **`dct-viz`** | DCT 纹理复杂度可视化 —— 8×8 块 DCT 高频能量占比热力图 + 原图叠加 |
 | **`color-extract` (根)** | 经典调色盘提取 —— 4 种算法 × 5 个色彩空间并行对比 |
+
+---
+
+# `dct-viz` — DCT 纹理复杂度可视化
+
+## 功能
+
+- 加载 `imgs/` 下的图片，**Lanczos3 缩放至 ≤1024×1024**（保持比例）
+- 转灰度后对每个像素取 8×8 邻域做 **Type-II DCT**（与 `dct-extract` 实现一致）
+- 计算 **高频能量占比** `c = Σ_{u+v≥4} F(u,v)² / Σ_{all except DC} F²`，取值范围 [0,1]
+- 每张图输出 **2 种可视化**：
+  | 文件 | 说明 |
+  |------|------|
+  | `{name}_dct_heat.png` | 彩色热力图：蓝(平滑) → 青 → 黄 → 红(纹理丰富) |
+  | `{name}_dct_overlay.png` | 原图灰度叠加：平滑区≈原图灰，纹理区亮绿/青色高亮 |
+- **Rayon 多线程**并行计算每个像素的 DCT
+
+## 运行
+
+```bash
+cargo run --release -p dct-viz
+```
+
+输出在 `output/dct_viz/{filename}_dct_heat.png` 和 `*_dct_overlay.png`。
+
+## 用途
+
+- 直观查看图片的**纹理分布**：平滑区域（低复杂度）vs 细节/边缘区域（高复杂度）
+- 辅助理解 DCT 复杂度在颜色提取中的作用——背景往往是平滑区（c 低），主体纹理区（c 高）
+- 与 `lab-gradient` 的输出对比：DCT 反映的是**频域**纹理，Sobel 反映的是**空域**梯度
 
 ---
 
@@ -145,6 +176,10 @@ color-extract/
 │       ├── dct.rs                 # 8×8 DCT 实现
 │       ├── cluster_4d.rs          # 聚类 + 高级评分系统（调参区）
 │       └── html.rs                # HTML 报告生成
+├── dct-viz/                       # DCT 纹理复杂度可视化
+│   ├── Cargo.toml
+│   └── src/
+│       └── main.rs                # 加载→缩放→DCT→热力图+叠加图输出
 ├── lab-gradient/                  # LAB Sobel 梯度可视化
 │   ├── Cargo.toml
 │   └── src/
@@ -162,10 +197,11 @@ color-extract/
 │       ├── median_cut.rs
 │       └── octree.rs
 ├── imgs/                          # 输入图片目录
-├── output/                        # 生成的 HTML 报告 & 梯度图
+├── output/                        # 生成的 HTML 报告 & 可视化图
 │   ├── results.html               # 经典调色盘报告
 │   ├── results-dct.html           # DCT 增强报告
-│   └── lab_gradient/              # LAB 梯度可视化
+│   ├── lab_gradient/              # LAB 梯度可视化
+│   └── dct_viz/                   # DCT 复杂度可视化
 └── README.md
 ```
 
