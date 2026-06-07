@@ -73,12 +73,12 @@ fn main() -> anyhow::Result<()> {
                 .expect("MiniBatch baseline failed");
             print_result_summary("MiniBatch(base)", &minibatch_base);
 
-            // 4. Build 4‑D dataset [L, a, b, c×10]
-            // Scale c by 10× so its magnitude competes with LAB dimensions
+            // 4. Build 4‑D dataset [L, a, b, c×20]
+            // Scale c by 20× so its magnitude competes with LAB dimensions
             let data_4d: Vec<[f64; 4]> = lab_pixels
                 .iter()
                 .zip(complexity.iter())
-                .map(|(&[l, a, b], &c)| [l, a, b, c * 10.0])
+                .map(|(&[l, a, b], &c)| [l, a, b, c * 20.0])
                 .collect();
 
             // 5. K‑Means++ (4D)
@@ -93,7 +93,7 @@ fn main() -> anyhow::Result<()> {
                 .expect("MiniBatch failed");
             print_result_summary("MiniBatch(c)", &minibatch);
 
-            // 7. Build 6‑D dataset [L, a, b, c×10, nx×10, ny×10]
+            // 7. Build 6‑D dataset [L, a, b, c×20, nx×10, ny×10]
             let w = img.width as f64;
             let h = img.height as f64;
             let data_6d: Vec<[f64; 6]> = lab_pixels
@@ -103,7 +103,7 @@ fn main() -> anyhow::Result<()> {
                 .map(|(i, (&[l, a, b], &c))| {
                     let px = (i as u32 % img.width) as f64 / w * 10.0;
                     let py = (i as u32 / img.width) as f64 / h * 10.0;
-                    [l, a, b, c * 10.0, px, py]
+                    [l, a, b, c * 20.0, px, py]
                 })
                 .collect();
 

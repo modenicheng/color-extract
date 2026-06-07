@@ -1,6 +1,98 @@
 # 🎨 Color Extract — 图片主色/调色盘提取工具
 
-基于 Rust 的高性能图片颜色提取 demo，支持 **4 种算法 × 5 个色彩空间**，输出可视化 HTML 报告。
+基于 Rust 的高性能图片颜色提取与可视化 demo，包含 **3 个独立 crate**：
+
+| Crate | 用途 |
+|-------|------|
+| **`dct-extract`** | DCT 增强颜色提取 —— 结合 DCT 纹理复杂度和空间信息的高级评分系统 |
+| **`lab-gradient`** | LAB 空间 Sobel 梯度可视化 —— 将三通道梯度映射到 RGB 单图 |
+| **`color-extract` (根)** | 经典调色盘提取 —— 4 种算法 × 5 个色彩空间并行对比 |
+
+---
+
+# `dct-extract` — DCT 增强颜色提取
+
+## 功能
+
+- 对图片做 **8×8 DCT** 运算，提取**局部纹理复杂度**（高频能量占比）
+- 结合复杂度、占空比、**CIELAB 色彩特征**，用 **KMeans++ / Mini-Batch KMeans** 聚类
+- **三组对比实验**：
+  - Baseline：纯 3D (L\*a\*b\*) 聚类
+  - 4D (L\*a\*b\* + c)：复杂度维度放大 20× 参与聚类
+  - 6D (L\*a\*b\* + c + xy)：再加空间坐标，放大 20×/10×
+- **高级评分系统**（七项指标加权，全参数开放调优）：
+  ```
+  score = p^0.5 · (1+2.7·c_final) · (1+0.20·C_rel) · (1+0.20·L_prom) · (1+0.65·U) · bg_penalty · white_gate
+  ```
+  - **p**：占比幂次（γ=0.5，开根号抑制大面积背景）
+  - **c_final**：DCT 纹理复杂度（绝对截断 + 百分位排名混合）
+  - **C_rel**：相对彩度（median + MAD，>0 才奖，偏淡图里相对鲜艳也能加分）
+  - **L_prom**：亮度突出度（局部 Gaussian 加权亮度反差 + 背景亮度反差，双边 |ΔL| 对比）
+  - **U**：颜色独特性（加权 pairwise ΔE 归一化）
+  - **bg_penalty**：背景惩罚（BFS 边界连通 + 边缘 + 散布 + 平滑度）
+  - **white_gate**：白/浅灰背景专用门控（chroma<5, L>85, con>0.4 → ×0.15）
+- **BFS 边界连通性**检测：从图像四边多源 BFS 识别背景色
+- **全参数调参区**：文件顶部集中标注，改完即跑
+- 输出自包含 HTML 报告，暗色主题，含诊断徽章（c, C, U, L_prom, B, score）
+- 自定义最大尺寸、输出路径
+
+## 运行
+
+```bash
+cargo run --release -p dct-extract
+cargo run --release -p dct-extract -- <max_dim> <output_path>
+```
+
+输出默认位于 `output/results-dct.html`。
+
+## 评分参数一览
+
+调参区位于 `dct-extract/src/cluster_4d.rs` 顶部，所有常量加注释：
+
+| 参数 | 默认值 | 含义 |
+|------|--------|------|
+| `SCORE_GAMMA` | 0.5 | 占比幂次 |
+| `SCORE_ALPHA_C` | 2.7 | 复杂度权重 |
+| `SCORE_BETA_C` | 0.20 | 相对彩度权重 |
+| `SCORE_BETA_L` | 0.20 | 亮度突出度权重（局部+背景反差） |
+| `SCORE_BETA_U` | 0.65 | 独特性权重 |
+| `SCORE_LAMBDA_B` | 1.0 | 背景惩罚力度 |
+| `SCORE_WHITE_GATE` | 0.15 | 白背景门控乘数 |
+| `BG_W1~W4` | 0.40/0.30/0.15/0.15 | 背景性 B 的组成 |
+| `L_LOCAL_W` / `L_BG_W` | 0.5 / 0.5 | 亮度突出度组成配比 |
+
+---
+
+# `lab-gradient` — LAB 空间 Sobel 梯度可视化
+
+## 功能
+
+- 加载 `imgs/` 下的图片，**Lanczos3 缩放至 ≤1024×1024**（保持比例）
+- 转换到 **CIELAB** 色彩空间
+- 对 L\*、a\*、b\* **三个通道分别计算 Sobel 梯度幅值**
+- **合并为一张 RGB 图输出**：
+  - **R 通道** = L\* 梯度幅值（亮度变化）
+  - **G 通道** = a\* 梯度幅值（绿-红变化）
+  - **B 通道** = b\* 梯度幅值（蓝-黄变化）
+- 每个通道独立归一化到 0-255，用最大-最小拉伸保证对比度
+
+## 运行
+
+```bash
+cargo run --release -p lab-gradient
+```
+
+输出在 `output/lab_gradient/{filename}_grad.png`。
+
+## 用途
+
+- 直观查看 LAB 空间中各维度的边缘/纹理响应
+- 分析色彩过渡区域（a\* 和 b\* 梯度强处往往是色相变化处）
+- 辅助理解 DCT 复杂度特征与梯度幅值的关系
+
+---
+
+# `color-extract` — 经典调色盘提取
 
 ## 功能
 
@@ -30,46 +122,68 @@
 ## 运行
 
 ```bash
-# 图片放在 imgs/ 目录下（支持 jpg/jpeg/png）
 cargo run --release
-
-# 自定义参数
 cargo run --release -- <max_dim> <output_path>
 # 例如：
 cargo run --release -- 512 output/my-results.html
 ```
 
-输出文件默认位于 `output/results.html`，用浏览器打开即可。
+输出默认位于 `output/results.html`。
 
-## 项目结构
+---
+
+## 工作区结构
 
 ```
 color-extract/
-├── Cargo.toml
-├── src/
-│   ├── main.rs                  # CLI 入口，并行调度
-│   ├── img.rs                   # 图片加载、缩放、Base64 缩略图
-│   ├── colorspace.rs            # 5 个色彩空间的转换 + CAM16-UCS 反算
-│   ├── html.rs                  # HTML 报告生成（暗色主题）
-│   ├── timing.rs                # 耗时测量工具
+├── Cargo.toml                     # 工作区根
+├── dct-extract/                   # DCT 增强颜色提取
+│   ├── Cargo.toml
+│   └── src/
+│       ├── main.rs                # CLI 入口
+│       ├── img.rs                 # 图片加载/缩放
+│       ├── dct.rs                 # 8×8 DCT 实现
+│       ├── cluster_4d.rs          # 聚类 + 高级评分系统（调参区）
+│       └── html.rs                # HTML 报告生成
+├── lab-gradient/                  # LAB Sobel 梯度可视化
+│   ├── Cargo.toml
+│   └── src/
+│       └── main.rs                # 加载→缩放→LAB→Sobel→RGB 输出
+├── src/                           # 经典调色盘提取
+│   ├── main.rs
+│   ├── img.rs
+│   ├── colorspace.rs              # 5 个色彩空间转换 + CAM16-UCS 反算
+│   ├── html.rs
+│   ├── timing.rs
 │   └── algorithms/
-│       ├── mod.rs               # Algorithm trait + PaletteEntry 类型
-│       ├── kmeans.rs            # KMeans++ (linfa-clustering)
-│       ├── minibatch_kmeans.rs  # Mini-Batch KMeans (batch=2048)
-│       ├── median_cut.rs        # Median Cut 自定义实现
-│       └── octree.rs            # Octree 八叉树量化（双策略）
-├── imgs/                        # 输入图片目录
-└── output/                      # 生成的 HTML 报告
+│       ├── mod.rs
+│       ├── kmeans.rs
+│       ├── minibatch_kmeans.rs
+│       ├── median_cut.rs
+│       └── octree.rs
+├── imgs/                          # 输入图片目录
+├── output/                        # 生成的 HTML 报告 & 梯度图
+│   ├── results.html               # 经典调色盘报告
+│   ├── results-dct.html           # DCT 增强报告
+│   └── lab_gradient/              # LAB 梯度可视化
+└── README.md
 ```
 
 ## 性能
 
-以 3 张动漫插画（~800×1200，缩放至 ≤1024）在 Ryzen 处理器上测试：
+### dct-extract
+| 指标 | 数值 |
+|------|------|
+| 测试图数 | 37 张动漫插画/照片 |
+| 总耗时 | ~90-125s (release, 含 6 种聚类方式) |
+| 4D KMeans++ | ~0.3-1.7s/图 |
+| 单图聚类数 | 10 |
 
+### root color-extract (经典版)
 | 指标 | 数值 |
 |------|------|
 | 总组合数 | 60 (3图 × 4算法 × 5空间) |
-| 总耗时 | ~5 秒 (release) |
+| 总耗时 | ~5s (release) |
 | 最快算法 | Median Cut (~170ms/组合) |
 | 最慢算法 | KMeans++ (~2-4s/组合) |
 
@@ -78,16 +192,19 @@ color-extract/
 | Crate | 用途 |
 |-------|------|
 | `image` 0.25 | 图片加载/缩放 |
-| `palette` 0.7 | 全部 5 个色彩空间 + CAM16 |
+| `palette` 0.7 | CIELAB、Oklab、HSL、CAM16 等色彩空间 |
 | `linfa-clustering` 0.8 | KMeans++ / Mini-Batch KMeans |
-| `ndarray` 0.15 | 矩阵计算 |
+| `ndarray` 0.16 | 矩阵计算 |
 | `rayon` 1 | 多线程并行 |
 | `base64` 0.22 | 图片内嵌 HTML |
+| `chrono` 0.4 | 时间戳 |
+| `rand_xoshiro` 0.6 | 确定性随机数种子 |
+| `anyhow` 1 | 错误处理 |
 
 ## 构建
 
 ```bash
-# 需要 Rust 1.94+
+# 需要 Rust 1.84+ (edition 2024)
 cargo build --release
 ```
 
@@ -102,12 +219,20 @@ cargo build --release
 - **RGB 空间**：经典位索引八叉树，直接对 0-255 整数坐标按位分组
 - **其他空间**：范围索引八叉树，在每个节点计算坐标范围的二分中点来分组
 
-### 主色提取
+### 主色提取（经典版）
 
 主色来自算法内部状态，而非调色盘排序结果：
 - KMeans/Mini-Batch：像素数最多的聚类的质心
 - Median Cut：最大 bucket 的均值
 - Octree：像素数最多的叶子节点的均值
+
+### DCT 复杂度
+
+8×8 块 Type-II DCT 后，高频系数绝对值之和与总系数绝对值之和的比值作为块级复杂度。聚类时复杂度放大 20× 参与距离计算，在评分环节再除以 20 归一化。
+
+### 亮度突出度
+
+使用**局部 Gaussian 加权亮度反差** + **背景亮度反差**的双边对比度机制，替代旧的彩度联动方案。亮色在暗图中、暗色在亮图中均能获得亮度加分，真正反映"突出"而不仅是"亮"。
 
 ## License
 

@@ -1,5 +1,5 @@
 [workspace]
-members = ["dct-extract"]
+members = ["dct-extract", "lab-gradient"]
 resolver = "2"
 
 [package]

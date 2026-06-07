@@ -19,15 +19,16 @@ use std::time::Duration;
 //   score = p^GAMMA                           ← 占比（<1 抑制大面积，>1 奖励大面积）
 //         × (1 + ALPHA_C × c_final)           ← DCT 纹理复杂度奖励
 //         × (1 + BETA_C  × C_rel_pos)          ← 相对彩度奖励（图内偏鲜艳加分）
-//         × L_weight                            ← 亮度×彩度联动（见下）
+//         × (1 + BETA_L  × L_prominence)       ← 亮度突出度（局部反差+背景反差）
 //         × (1 + BETA_U  × U_norm)              ← 颜色独特性奖励（与众不同加分）
 //         × bg_penalty                          ← 背景惩罚（除法版）
 //         × WHITE_GATE (条件触发)               ← 白/浅灰背景额外打压
 //
-// 亮度联动:
-//   L_weight = 1 + BETA_L × L_rel_pos × (0.5 + 0.5 × max(C_rel_pos, U_norm))
-//   含义：亮度本身不加分，只有同时具备彩度 OR 独特性时才加分。
-//   纯白背景（亮但无色）拿不到亮度奖励。
+// 亮度突出度 (替代旧的 L_weight 彩度联动):
+//   L_prominence = L_LOCAL_W × local_contrast + L_BG_W × bg_contrast
+//   local_contrast: 空间邻近 cluster 的加权亮度差的归一化值 (Gaussian 核)
+//   bg_contrast:    与背景 cluster (最高 backgroundness) 的亮度差 / 100
+//   含义: 暗色在亮图中、亮色在暗图中 → 都加分；纯色亮度≠对比度
 //
 // 背景惩罚:
 //   bg_penalty = 1 / (1 + LAMBDA_B × B)
@@ -38,12 +39,20 @@ use std::time::Duration;
 //   → 仅近中性 + 高亮 + 边界连通三者同时满足才触发
 //   → 不会误伤白色衣服、银发等主体色
 const SCORE_GAMMA: f64 = 0.5;    // ↑ 占比幂次: 0.5=开根号抑制大块背景
-const SCORE_ALPHA_C: f64 = 3.0;  // ↑ 复杂度权重: 纹理丰富的颜色加分更多
-const SCORE_BETA_C: f64 = 0.25;  // ↑ 相对彩度权重: 鲜艳色加分
-const SCORE_BETA_L: f64 = 0.30;  // ↑ 相对亮度权重: 亮色（有彩度时）加分
-const SCORE_BETA_U: f64 = 0.35;  // ↑ 独特性权重: 颜色越独有加分越多
+const SCORE_ALPHA_C: f64 = 2.7;  // ↑ 复杂度权重: 纹理丰富的颜色加分更多
+const SCORE_BETA_C: f64 = 0.20;  // ↑ 相对彩度权重: 鲜艳色加分
+const SCORE_BETA_L: f64 = 0.20;  // ↑ 亮度突出度权重: 局部和背景亮度反差加分 (调小避免亮色主导)
+const SCORE_BETA_U: f64 = 0.65;  // ↑ 独特性权重: 颜色越独有加分越多
 const SCORE_LAMBDA_B: f64 = 1.0;  // ↑ 背景惩罚: 0=关，越大越狠
 const SCORE_WHITE_GATE: f64 = 0.15; // ↓ 白背景乘数: 越小打压越狠
+
+// ----- 亮度突出度 L_prominence 的组成 (2 项相加 = 1.0) -----
+// L_prominence = L_LOCAL_W × local_contrast + L_BG_W × bg_contrast
+//
+// local_contrast: 当前 cluster 与空间邻近 cluster 的加权 |ΔL|, Gaussian 核衰减
+// bg_contrast:    当前 cluster 与背景 cluster 的 |ΔL| / 100
+const L_LOCAL_W: f64 = 0.5;  // 局部亮度反差权重
+const L_BG_W: f64 = 0.5;     // 背景亮度反差权重
 
 // ----- 背景性 B 的组成 (4 项相加 = 1.0) -----
 // B = W1×border_connected + W2×edge + W3×spread + W4×smoothness
@@ -52,17 +61,17 @@ const SCORE_WHITE_GATE: f64 = 0.15; // ↓ 白背景乘数: 越小打压越狠
 // edge:             落在图像四边边缘的像素占比
 // spread:           空间分布广度（标准差归一化，大 = 像背景）
 // smoothness:       纹理平坦度 (1 − c_abs)，平滑区域更像背景
-const BG_W1: f64 = 0.35; // 边界连通 — 最重要
-const BG_W2: f64 = 0.35; // 边缘占比
-const BG_W3: f64 = 0.10; // 空间扩散
-const BG_W4: f64 = 0.20; // 纹理平滑
+const BG_W1: f64 = 0.40; // 边界连通 — 最重要
+const BG_W2: f64 = 0.30; // 边缘占比
+const BG_W3: f64 = 0.15; // 空间扩散
+const BG_W4: f64 = 0.15; // 纹理平滑
 
 // ----- 硬编码 clamp 参数 (不常改，但知道在哪) -----
 //
-// c_abs    = clamp(c_raw / 10.0,   0, 0.6)   — 绝对复杂度截断
+// c_abs    = clamp(c_raw / 20.0,   0, 0.6)   — 绝对复杂度截断
 // c_final  = 0.6×c_abs + 0.4×percentile_rank  — 复杂度混合比例 (c_final∈[0,1])
 // C_rel    = clamp((C−C_med)/C_mad, 0, 3) / 3  — 相对彩度，3 MAD 封顶
-// L_rel    = clamp((L−L_med)/L_mad, 0, 3) / 3  — 相对亮度，3 MAD 封顶
+// σ        = min(w, h) / 3.0                   — 局部亮度反差 Gaussian 核带宽
 //
 // White gate 阈值:
 //   chroma < 5.0   — 几乎无色
@@ -95,6 +104,7 @@ pub struct Cluster4D {
     pub uniqueness: f64,
     pub centre_weight: f64,
     pub backgroundness: f64,
+    pub l_prominence: f64,
 }
 
 /// Result of a clustering run.
@@ -138,6 +148,7 @@ fn make_empty_cluster() -> Cluster4D {
         uniqueness: 0.0,
         centre_weight: 0.0,
         backgroundness: 0.0,
+        l_prominence: 0.0,
     }
 }
 
@@ -171,6 +182,7 @@ fn build_cluster(
         uniqueness: 0.0,
         centre_weight: 0.0,
         backgroundness: 0.0,
+        l_prominence: 0.0,
     }
 }
 
@@ -289,23 +301,13 @@ fn score_clusters(clusters: &mut [Cluster4D], ctx: &ScoreCtx) {
         .collect();
 
     // ================================================================
-    //  4. 相对亮度 L_rel_pos  (同公式, median + MAD)
-    //     只奖励比中位更亮的颜色；暗色不加分也不扣分
-    // ================================================================
-    let l_med = median(&ls);
-    let l_mad = median_abs_dev(&ls, l_med) + eps;
-    let l_rel_pos: Vec<f64> = ls.iter()
-        .map(|&li| ((li - l_med) / l_mad).clamp(0.0, 3.0) / 3.0)
-        .collect();
-
-    // ================================================================
-    //  5. 复杂度 c_final  (绝对 + 相对混合)
+    //  4. 复杂度 c_final  (绝对 + 相对混合)
     //     c_abs  = clamp(c_raw/10, 0, 0.6)   ← 绝对截断
     //     c_rank = 0~1 百分位排名             ← 图内相对
     //     c_final = 0.6×c_abs + 0.4×c_rank   ← 混合
     // ================================================================
     let c_abs: Vec<f64> = c_raws.iter()
-        .map(|&cr| (cr / 10.0).clamp(0.0, 0.6))
+        .map(|&cr| (cr / 20.0).clamp(0.0, 0.6))
         .collect();
     let c_rank = percentile_ranks(&c_raws);
     let c_final: Vec<f64> = c_abs.iter().zip(&c_rank)
@@ -313,7 +315,7 @@ fn score_clusters(clusters: &mut [Cluster4D], ctx: &ScoreCtx) {
         .collect();
 
     // ================================================================
-    //  6. 颜色独特性 U_norm  (加权 pairwise ΔE)
+    //  5. 颜色独特性 U_norm  (加权 pairwise ΔE)
     //     U_i = Σ_j p_j × ΔE(Lab_i, Lab_j)
     //     然后除以 max(U) 归一化到 [0,1]
     //     含义: 这个颜色和图中其他颜色有多"不同"
@@ -323,7 +325,7 @@ fn score_clusters(clusters: &mut [Cluster4D], ctx: &ScoreCtx) {
         let mut sum = 0.0;
         for j in 0..k {
             if i == j { continue; }
-            sum += ps[j] * delta_e(&labs[i], &labs[j]);  // 加权求和
+            sum += ps[j] * delta_e(&labs[i], &labs[j]);
         }
         u_raw[i] = sum;
     }
@@ -335,42 +337,86 @@ fn score_clusters(clusters: &mut [Cluster4D], ctx: &ScoreCtx) {
     };
 
     // ================================================================
-    //  最终分数计算
+    //  6. 背景性 B & 惩罚 (先算一遍，找出背景 cluster)
+    // ================================================================
+    let mut bg = vec![0.0f64; k];
+    let mut bg_penalties = vec![1.0f64; k];
+    for i in 0..k {
+        if ctx.counts[i] == 0 { continue; }
+        let smoothness = 1.0 - c_abs[i];
+        bg[i] = (BG_W1 * clusters[i].border_connected_ratio
+               + BG_W2 * clusters[i].edge_ratio
+               + BG_W3 * clusters[i].spread
+               + BG_W4 * smoothness)
+            .clamp(0.0, 1.0);
+        bg_penalties[i] = 1.0 / (1.0 + SCORE_LAMBDA_B * bg[i]);
+    }
+    let bg_idx = (0..k)
+        .max_by(|&i, &j| bg[i].partial_cmp(&bg[j]).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap_or(0);
+    let l_bg = clusters[bg_idx].lab_l;
+
+    // ================================================================
+    //  7. 局部亮度反差 local_contrast
+    //     Gaussian 空间加权: 邻近 cluster 的 |ΔL| 权重大，远处的权重小
+    //     local_contrast_i = Σ_{j≠i} p_j × gauss(dist) × |L_i−L_j| / Σ p_j × gauss
+    // ================================================================
+    let sigma = w.min(h) / 3.0;
+    let sigma2_2 = 2.0 * sigma * sigma;
+    let mut local_contrast = vec![0.0f64; k];
+    for i in 0..k {
+        if ctx.counts[i] == 0 { continue; }
+        let (ax, ay) = (clusters[i].avg_x, clusters[i].avg_y);
+        let mut num = 0.0;
+        let mut den = 0.0;
+        for j in 0..k {
+            if i == j || ctx.counts[j] == 0 { continue; }
+            let dx = ax - clusters[j].avg_x;
+            let dy = ay - clusters[j].avg_y;
+            let g = (-(dx * dx + dy * dy) / sigma2_2).exp();
+            num += ps[j] * g * (ls[i] - ls[j]).abs();
+            den += ps[j] * g;
+        }
+        local_contrast[i] = if den > eps { (num / den) / 100.0 } else { 0.0 };
+    }
+
+    // ================================================================
+    //  8. 背景亮度反差 bg_contrast + 拼合 L_prominence
+    //     bg_contrast_i = |L_i − L_bg| / 100  (归一化到 0~1)
+    //     L_prominence = w_local × local_contrast + w_bg × bg_contrast
+    // ================================================================
+    let l_prom: Vec<f64> = (0..k)
+        .map(|i| {
+            if ctx.counts[i] == 0 { return 0.0; }
+            let bg_c = (ls[i] - l_bg).abs() / 100.0;
+            L_LOCAL_W * local_contrast[i] + L_BG_W * bg_c
+        })
+        .collect();
+
+    // ================================================================
+    //  9. 最终分数计算
     // ================================================================
     //
-    // 注意：所有颜色特征 (C_rel, L_rel, U_norm) 都是图内相对值，
-    //       所以低饱和图里的"相对鲜艳"色同样能拿高分。
+    // 亮度突出度替代旧的 L_weight: 双边 |ΔL| 对比，暗色在亮图/亮色在暗图都加分。
     for i in 0..k {
         let n = ctx.counts[i] as f64;
         if n == 0.0 { continue; }
         let c = &mut clusters[i];
 
-        // ---- 背景性 B & 惩罚 ----
-        let smoothness = 1.0 - c_abs[i];            // 纹理越平滑越像背景
-        c.backgroundness = (BG_W1 * c.border_connected_ratio  // 边界连通
-                          + BG_W2 * c.edge_ratio               // 边缘占比
-                          + BG_W3 * c.spread                   // 空间扩散
-                          + BG_W4 * smoothness)                // 纹理平滑
-            .clamp(0.0, 1.0);
-
-        let bg_penalty = 1.0 / (1.0 + SCORE_LAMBDA_B * c.backgroundness);
-        // bg_penalty ∈ (0, 1] : B=0→1.0(无惩罚), B=1→1/(1+LAMBDA_B)
-
+        c.backgroundness = bg[i];
         c.uniqueness = u_norm[i];
+        c.l_prominence = l_prom[i];
 
-        // ---- 亮度联动彩度: 亮色+有色才加分 ----
-        // L_rel_pos 越大 = 比图内大多数颜色更亮
-        // 但乘以 (0.5 + 0.5*max(C_rel,U)) 后，只有同时鲜明/独特才能激活
-        let l_weight = 1.0 + SCORE_BETA_L * l_rel_pos[i]
-            * (0.5 + 0.5 * c_rel_pos[i].max(u_norm[i]));
+        // ---- 亮度突出度 ----
+        let l_term = 1.0 + SCORE_BETA_L * l_prom[i];
 
         // ---- 拼合最终分数 ----
         c.dominant_score = c.proportion.powf(SCORE_GAMMA)  // 占比
             * (1.0 + SCORE_ALPHA_C * c_final[i])            // 复杂度
             * (1.0 + SCORE_BETA_C  * c_rel_pos[i])          // 相对彩度
-            * l_weight                                        // 亮度联动
+            * l_term                                         // 亮度突出度
             * (1.0 + SCORE_BETA_U  * u_norm[i])              // 独特性
-            * bg_penalty;                                    // 背景惩罚
+            * bg_penalties[i];                               // 背景惩罚
 
         // ---- 白/浅灰背景专用门控 ----
         // 三个条件同时满足才触发, 不会误伤白衣服、银发等主体色

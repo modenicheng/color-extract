@@ -358,7 +358,7 @@ fn write_algo_section(html: &mut String, name: &str, desc: &str, result: &Cluste
         coord_info
     ));
     html.push_str(&format!(
-        "<span class=\"dominant-proportion\" style=\"color:var(--complexity);font-weight:600;\">score = p<sup>γ</sup>·(1+α<sub>c</sub>c)·(1+β<sub>C</sub>C<sub>rel</sub>)·L<sub>w</sub>·(1+β<sub>U</sub>U)·bg = {:.4}  (γ=0.5,α=3,β<sub>C</sub>=0.25,β<sub>L</sub>=0.30,β<sub>U</sub>=0.35,λ<sub>B</sub>=1.0)</span>\n",
+        "<span class=\"dominant-proportion\" style=\"color:var(--complexity);font-weight:600;\">score = p<sup>γ</sup>·(1+α<sub>c</sub>c)·(1+β<sub>C</sub>C<sub>rel</sub>)·(1+β<sub>L</sub>L<sub>prom</sub>)·(1+β<sub>U</sub>U)·bg = {:.4}  (γ=0.5,α=2.7,β<sub>C</sub>=0.30,β<sub>L</sub>=0.35,β<sub>U</sub>=0.65,λ<sub>B</sub>=1.0)</span>\n",
         score
     ));
     html.push_str(&format!(
@@ -426,6 +426,13 @@ fn write_algo_section(html: &mut String, name: &str, desc: &str, result: &Cluste
             html.push_str(&format!(
                 "<span class=\"complexity-badge\" style=\"background:rgba(255,200,60,0.12);color:#fc3;\">U={:.2}</span>\n",
                 cluster.uniqueness
+            ));
+        }
+        // L_prom badge (brightness prominence)
+        if cluster.l_prominence > 0.001 {
+            html.push_str(&format!(
+                "<span class=\"complexity-badge\" style=\"background:rgba(200,180,255,0.12);color:#c8b4ff;\">L<sub>prom</sub>={:.3}</span>\n",
+                cluster.l_prominence
             ));
         }
         // Background diagnostics
