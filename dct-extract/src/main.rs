@@ -73,26 +73,27 @@ fn main() -> anyhow::Result<()> {
                 .expect("MiniBatch baseline failed");
             print_result_summary("MiniBatch(base)", &minibatch_base);
 
-            // 4. Build 4‑D dataset [L, a, b, c]
+            // 4. Build 4‑D dataset [L, a, b, c×10]
+            // Scale c by 10× so its magnitude competes with LAB dimensions
             let data_4d: Vec<[f64; 4]> = lab_pixels
                 .iter()
                 .zip(complexity.iter())
-                .map(|(&[l, a, b], &c)| [l, a, b, c])
+                .map(|(&[l, a, b], &c)| [l, a, b, c * 10.0])
                 .collect();
 
             // 5. K‑Means++ (4D)
             println!("   Running K‑Means++ (with c)…");
-            let kmeans = cluster_4d::kmeans_plus_plus(&data_4d, k, rng_seed)
+            let kmeans = cluster_4d::kmeans_plus_plus(&data_4d, k, rng_seed, img.width, img.height)
                 .expect("KMeans++ failed");
             print_result_summary("KMeans++(c)", &kmeans);
 
             // 6. Mini‑Batch K‑Means (4D)
             println!("   Running Mini‑Batch K‑Means (with c)…");
-            let minibatch = cluster_4d::mini_batch_kmeans(&data_4d, k, rng_seed)
+            let minibatch = cluster_4d::mini_batch_kmeans(&data_4d, k, rng_seed, img.width, img.height)
                 .expect("MiniBatch failed");
             print_result_summary("MiniBatch(c)", &minibatch);
 
-            // 7. Build 6‑D dataset [L, a, b, c, nx, ny]
+            // 7. Build 6‑D dataset [L, a, b, c×10, nx×10, ny×10]
             let w = img.width as f64;
             let h = img.height as f64;
             let data_6d: Vec<[f64; 6]> = lab_pixels
@@ -100,21 +101,21 @@ fn main() -> anyhow::Result<()> {
                 .zip(complexity.iter())
                 .enumerate()
                 .map(|(i, (&[l, a, b], &c))| {
-                    let px = (i as u32 % img.width) as f64 / w;
-                    let py = (i as u32 / img.width) as f64 / h;
-                    [l, a, b, c, px, py]
+                    let px = (i as u32 % img.width) as f64 / w * 10.0;
+                    let py = (i as u32 / img.width) as f64 / h * 10.0;
+                    [l, a, b, c * 10.0, px, py]
                 })
                 .collect();
 
             // 8. K‑Means++ (6D) — with coordinates
             println!("   Running K‑Means++ (c + xy)…");
-            let kmeans_6d = cluster_4d::kmeans_plus_plus_6d(&data_6d, k, rng_seed)
+            let kmeans_6d = cluster_4d::kmeans_plus_plus_6d(&data_6d, k, rng_seed, img.width, img.height)
                 .expect("KMeans++ 6D failed");
             print_result_summary("KMeans++(c+xy)", &kmeans_6d);
 
             // 9. Mini‑Batch K‑Means (6D) — with coordinates
             println!("   Running Mini‑Batch K‑Means (c + xy)…");
-            let minibatch_6d = cluster_4d::mini_batch_kmeans_6d(&data_6d, k, rng_seed)
+            let minibatch_6d = cluster_4d::mini_batch_kmeans_6d(&data_6d, k, rng_seed, img.width, img.height)
                 .expect("MiniBatch 6D failed");
             print_result_summary("MiniBatch(c+xy)", &minibatch_6d);
 
