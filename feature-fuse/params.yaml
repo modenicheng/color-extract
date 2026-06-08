@@ -1,0 +1,50 @@
+# =============================================================================
+# feature-fuse 参数配置
+# 修改后无需重新编译，直接运行即可生效
+# 留空/缺失的字段会使用 serde 默认值（或报错）
+# =============================================================================
+
+# ── 图片最长边限制 ──
+max_dim: 720
+
+# ── Gaussian 残差 sigma ──
+gauss_sigma: 25.0
+
+# ── Percentile Normalize ──
+percentile:
+  low: 1.0       # 低于此百分位 → 置 0
+  high: 99.0     # 高于此百分位 → 置 1
+
+# ── 加法分支权重（每组内部自动归一化，总和不必为 1） ──
+weights_add:
+  dct:          0.25
+  lab_grad:     0.25
+  spectral:     0.15
+  global_light: 0.30
+  global_sat:   0.20
+  local_light:  0.075
+  local_sat:    0.075
+
+# ── 乘法分支权重（与加法独立） ──
+weights_mul:
+  dct:          0.25
+  lab_grad:     0.25
+  spectral:     0.15
+  global_light: 0.30
+  global_sat:   0.20
+  local_light:  0.075
+  local_sat:    0.075
+
+# ── Hybrid Fusion ──
+fusion:
+  alpha:   0.10   # 加法分支混合比 (0=纯软乘, 1=纯加法)
+  gamma:   1.0    # 最终对比度调整指数 (<1 提亮, >1 增强对比)
+  epsilon: 0.15   # 软乘法 baseline（避免零值消失）
+
+# ── Contact Sheet 拼贴图布局 ──
+contact_sheet:
+  cols:    4      # 列数
+  rows:    3      # 行数
+  pad:     4      # 单元格间距
+  thumb_w: 240    # 每个单元格的最大宽度
+  label_h: 16     # 标签区域高度

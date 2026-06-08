@@ -14,48 +14,76 @@ use image::{GenericImageView, GrayImage, ImageBuffer, ImageReader, Luma, Rgb};
 use palette::{Hsl, IntoColor, Lab, Srgb};
 use rayon::prelude::*;
 use rustfft::{FftPlanner, num_complex::Complex};
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 // =============================================================================
-// [调参区] — 所有可调常量集中在此
+// [调参区]
+// 编译时参数（DCT 块大小等算法结构常量）在此。
+// 运行时可调参数请编辑 `params.yaml`，无需重新编译。
 // =============================================================================
 
-/// 图片最长边限制
-const MAX_DIM: u32 = 720;
+/// DCT 块大小（算法结构常量，改需重新编译）
+const DCT_N: usize = 8;
+/// DCT 高频阈值: u+v >= 此值视为高频
+const DCT_THRESHOLD: usize = 4;
 
-// ── DCT 参数 ──
-const DCT_N: usize = 8;         // DCT 块大小
-const DCT_THRESHOLD: usize = 4; // 高频阈值: u+v >= 此值视为高频
+// =============================================================================
+// YAML 参数加载
+// =============================================================================
 
-// ── Gaussian 残差参数 ──
-const GAUSS_SIGMA: f32 = 25.0;  // Gaussian 模糊 sigma
+#[derive(Debug, Deserialize)]
+struct Params {
+    max_dim: u32,
+    gauss_sigma: f32,
+    percentile: PercentileParams,
+    weights_add: Weights,
+    weights_mul: Weights,
+    fusion: FusionParams,
+    contact_sheet: ContactSheetParams,
+}
 
-// ── Percentile Normalize 参数 ──
-const P_LOW: f64 = 1.0;   // 低于此百分位 → 0
-const P_HIGH: f64 = 99.0; // 高于此百分位 → 1
+#[derive(Debug, Deserialize)]
+struct PercentileParams {
+    low: f64,
+    high: f64,
+}
 
-// ── Fusion 权重 (7 个特征) ──
-// 总和不必为 1，内部会自动归一化
-const W_DCT: f64 = 0.25;
-const W_LAB_GRAD: f64 = 0.25;
-const W_SPECTRAL: f64 = 0.15;
-const W_GLOBAL_LIGHT: f64 = 0.30;
-const W_GLOBAL_SAT: f64 = 0.20;
-const W_LOCAL_LIGHT: f64 = 0.075;
-const W_LOCAL_SAT: f64 = 0.075;
+#[derive(Debug, Deserialize)]
+struct Weights {
+    dct: f64,
+    lab_grad: f64,
+    spectral: f64,
+    global_light: f64,
+    global_sat: f64,
+    local_light: f64,
+    local_sat: f64,
+}
 
-// ── Hybrid Fusion 参数 ──
-const ALPHA: f64 = 0.10;    // 加权加法分支的混合比例 (α)
-const GAMMA: f64 = 0.75;    // 最终对比度调整指数
-const EPSILON: f64 = 0.15;  // 软乘法 baseline
+#[derive(Debug, Deserialize)]
+struct FusionParams {
+    alpha: f64,
+    gamma: f64,
+    epsilon: f64,
+}
 
-// ── Contact Sheet 布局 ──
-const CS_COLS: u32 = 4;      // 列数
-const CS_ROWS: u32 = 3;      // 行数
-const CS_PAD: u32 = 4;       // 单元格间距
-const CS_THUMB_W: u32 = 240; // 每个单元格的最大宽度
-const LABEL_H: u32 = 16;    // 每个单元格底部标签区域高度
+#[derive(Debug, Deserialize)]
+struct ContactSheetParams {
+    cols: u32,
+    rows: u32,
+    pad: u32,
+    thumb_w: u32,
+    label_h: u32,
+}
+
+fn load_params(path: &Path) -> Result<Params> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let params: Params = serde_yaml::from_str(&content)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(params)
+}
 
 // =============================================================================
 // 1. 图片加载
@@ -502,12 +530,12 @@ fn compute_gaussian_residual(ch: &[f64], w: u32, h: u32, sigma: f32) -> Vec<f64>
     residual
 }
 
-fn compute_local_light_residual(hsl_l: &[f64], w: u32, h: u32) -> Vec<f64> {
-    compute_gaussian_residual(hsl_l, w, h, GAUSS_SIGMA)
+fn compute_local_light_residual(hsl_l: &[f64], w: u32, h: u32, sigma: f32) -> Vec<f64> {
+    compute_gaussian_residual(hsl_l, w, h, sigma)
 }
 
-fn compute_local_sat_residual(hsl_s: &[f64], w: u32, h: u32) -> Vec<f64> {
-    compute_gaussian_residual(hsl_s, w, h, GAUSS_SIGMA)
+fn compute_local_sat_residual(hsl_s: &[f64], w: u32, h: u32, sigma: f32) -> Vec<f64> {
+    compute_gaussian_residual(hsl_s, w, h, sigma)
 }
 
 // =============================================================================
@@ -537,67 +565,46 @@ fn percentile_normalize(data: &[f64], p_low: f64, p_high: f64) -> Vec<f64> {
 // 8. Hybrid Fusion
 // =============================================================================
 
-struct FusionWeights {
-    w_dct: f64,
-    w_lab_grad: f64,
-    w_spectral: f64,
-    w_global_light: f64,
-    w_global_sat: f64,
-    w_local_light: f64,
-    w_local_sat: f64,
+/// 从 Params 中提取 7 元素权重数组
+fn weights_to_array(w: &Weights) -> [f64; 7] {
+    [w.dct, w.lab_grad, w.spectral, w.global_light, w.global_sat, w.local_light, w.local_sat]
 }
 
-impl Default for FusionWeights {
-    fn default() -> Self {
-        Self {
-            w_dct: W_DCT,
-            w_lab_grad: W_LAB_GRAD,
-            w_spectral: W_SPECTRAL,
-            w_global_light: W_GLOBAL_LIGHT,
-            w_global_sat: W_GLOBAL_SAT,
-            w_local_light: W_LOCAL_LIGHT,
-            w_local_sat: W_LOCAL_SAT,
-        }
-    }
-}
-
-/// Hybrid Fusion: 加权加法分支 + 软乘法分支 混合
+/// Hybrid Fusion: 加权加法分支 + 软乘法分支 混合，各自独立权重
 fn hybrid_fusion(
     features: &[&[f64]],
-    weights: &FusionWeights,
+    add_w: &[f64; 7],
+    mul_w: &[f64; 7],
     alpha: f64,
     gamma: f64,
     epsilon: f64,
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-    let raw_weights = [
-        weights.w_dct,
-        weights.w_lab_grad,
-        weights.w_spectral,
-        weights.w_global_light,
-        weights.w_global_sat,
-        weights.w_local_light,
-        weights.w_local_sat,
-    ];
-    assert_eq!(raw_weights.len(), features.len());
+    assert_eq!(add_w.len(), features.len());
+    assert_eq!(mul_w.len(), features.len());
 
     let n = features[0].len();
-    let total_weight: f64 = raw_weights.iter().sum();
-    let norm_weights: Vec<f64> = raw_weights.iter().map(|w| w / total_weight).collect();
+
+    // 归一化加法/乘法权重
+    let add_total: f64 = add_w.iter().sum();
+    let add_norm: Vec<f64> = add_w.iter().map(|&w| w / add_total).collect();
+    let mul_total: f64 = mul_w.iter().sum();
+    let mul_norm: Vec<f64> = mul_w.iter().map(|&w| w / mul_total).collect();
 
     let mut add_score = vec![0.0; n];
-    let mut mul_score = vec![0.0; n]; // ln-space accumulator
+    let mut mul_score = vec![0.0; n];
     let mut mul_has_data = vec![false; n];
 
     for (fi, feat) in features.iter().enumerate() {
-        let w = norm_weights[fi];
+        let wa = add_norm[fi];
+        let wm = mul_norm[fi];
         for j in 0..n {
-            add_score[j] += feat[j] * w;
+            add_score[j] += feat[j] * wa;
             let base = epsilon + (1.0 - epsilon) * feat[j];
             if !mul_has_data[j] {
-                mul_score[j] = base.ln() * w;
+                mul_score[j] = base.ln() * wm;
                 mul_has_data[j] = true;
             } else {
-                mul_score[j] += base.ln() * w;
+                mul_score[j] += base.ln() * wm;
             }
         }
     }
@@ -681,25 +688,28 @@ fn draw_text_rgb(canvas: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, text: &str, x: i32,
 // 11. Contact Sheet 拼贴图（带标签）
 // =============================================================================
 
-/// 创建包含原图、7 张特征图、3 张融合图的 contact sheet 拼贴图，每张子图下方带说明标签
+/// 创建包含原图、7 张特征图、3 张融合图的 contact sheet 拼贴图
+/// 每张子图下方带说明标签，右下角空位印时间戳
 fn make_contact_sheet_full(
     original: &[[f64; 3]],
     features: &[(&str, &[f64])],
     fused: &[(&str, &[f64])],
     w: u32,
     h: u32,
+    layout: &ContactSheetParams,
+    timestamp: &str,
     path: &Path,
 ) -> Result<()> {
-    let cell_w = CS_THUMB_W.min(w);
+    let cell_w = layout.thumb_w.min(w);
     let cell_h = (cell_w as f64 * h as f64 / w as f64).round() as u32;
 
-    // sheet 高度每行多出 LABEL_H 用于标签
-    let step_h = cell_h + LABEL_H;
-    let sheet_w = CS_COLS * (cell_w + CS_PAD) + CS_PAD;
-    let sheet_h = CS_ROWS * (step_h + CS_PAD) + CS_PAD;
+    // sheet 高度每行多出 label_h 用于标签
+    let step_h = cell_h + layout.label_h;
+    let sheet_w = layout.cols * (cell_w + layout.pad) + layout.pad;
+    let sheet_h = layout.rows * (step_h + layout.pad) + layout.pad;
 
     // 收集所有缩略图 (RGB)
-    let mut thumbs: Vec<ImageBuffer<Rgb<u8>, Vec<u8>>> = Vec::with_capacity((CS_COLS * CS_ROWS) as usize);
+    let mut thumbs: Vec<ImageBuffer<Rgb<u8>, Vec<u8>>> = Vec::with_capacity((layout.cols * layout.rows) as usize);
 
     // 原图缩略
     thumbs.push(make_thumb_rgb(original, w, h, cell_w, cell_h));
@@ -736,13 +746,13 @@ fn make_contact_sheet_full(
     }
 
     for (idx, thumb) in thumbs.iter().enumerate() {
-        if idx >= (CS_COLS * CS_ROWS) as usize {
+        if idx >= (layout.cols * layout.rows) as usize {
             break;
         }
-        let col = idx as u32 % CS_COLS;
-        let row = idx as u32 / CS_COLS;
-        let ox = CS_PAD + col * (cell_w + CS_PAD);
-        let oy = CS_PAD + row * (step_h + CS_PAD);
+        let col = idx as u32 % layout.cols;
+        let row = idx as u32 / layout.cols;
+        let ox = layout.pad + col * (cell_w + layout.pad);
+        let oy = layout.pad + row * (step_h + layout.pad);
 
         // overlay thumbnail
         image::imageops::overlay(&mut sheet, thumb, ox as i64, oy as i64);
@@ -755,6 +765,16 @@ fn make_contact_sheet_full(
             draw_text_rgb(&mut sheet, label, label_x.max(0), label_y, Rgb([40, 40, 40]));
         }
     }
+
+    // ── 右下角（第 12 格）印时间戳 ──
+    let ts_col = layout.cols - 1;
+    let ts_row = layout.rows - 1;
+    let ts_ox = layout.pad + ts_col * (cell_w + layout.pad);
+    let ts_oy = layout.pad + ts_row * (step_h + layout.pad);
+    let ts_text_w = timestamp.len() as i32 * 8;
+    let ts_label_x = ts_ox as i32 + (cell_w as i32 - ts_text_w) / 2;
+    let ts_label_y = ts_oy as i32 + (cell_h as i32 / 2) - 4; // 垂直居中
+    draw_text_rgb(&mut sheet, timestamp, ts_label_x.max(0), ts_label_y, Rgb([120, 120, 120]));
 
     sheet.save(path).context(format!("save contact sheet {}", path.display()))?;
     Ok(())
@@ -792,11 +812,15 @@ fn make_thumb_rgb(data: &[[f64; 3]], src_w: u32, src_h: u32, dst_w: u32, dst_h: 
 // =============================================================================
 
 fn main() -> Result<()> {
-    // ── CLI 参数 ──
+    // ── 加载 YAML 参数 ──
+    let params_path = Path::new("feature-fuse/params.yaml");
+    let params = load_params(params_path)?;
+
+    // ── CLI 参数可覆盖 max_dim ──
     let max_dim: u32 = std::env::args()
         .nth(1)
         .and_then(|s| s.parse().ok())
-        .unwrap_or(MAX_DIM);
+        .unwrap_or(params.max_dim);
 
     let out_base: PathBuf = std::env::args()
         .nth(2)
@@ -842,7 +866,7 @@ fn main() -> Result<()> {
     let results: Vec<Result<String>> = image_paths
         .par_iter()
         .map(|path| {
-            process_one_image(path, max_dim, &out_base)
+            process_one_image(path, &params, max_dim, &out_base)
         })
         .collect();
 
@@ -876,7 +900,7 @@ fn main() -> Result<()> {
 }
 
 /// 处理单张图片：计算所有特征 → 归一化 → 融合 → 输出
-fn process_one_image(path: &Path, max_dim: u32, out_base: &Path) -> Result<String> {
+fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> Result<String> {
     // ── 加载图片 ──
     let data = load_image(path, max_dim)?;
     let stem = data.stem.clone();
@@ -899,52 +923,54 @@ fn process_one_image(path: &Path, max_dim: u32, out_base: &Path) -> Result<Strin
         .map(|&[r, g, b]| 0.299 * r + 0.587 * g + 0.114 * b)
         .collect();
 
+    let (p_low, p_high) = (params.percentile.low, params.percentile.high);
+
     // ── (1) DCT 纹理复杂度 ──
     let t0 = std::time::Instant::now();
     let dct_raw = compute_dct_complexity(&gray, w as usize, h as usize);
-    let dct_norm = percentile_normalize(&dct_raw, P_LOW, P_HIGH);
+    let dct_norm = percentile_normalize(&dct_raw, p_low, p_high);
     save_gray_png(&dct_norm, w, h, &out_dir.join("dct_complexity.png"))?;
     let t_dct = t0.elapsed();
 
     // ── (2) LAB 梯度 ──
     let t0 = std::time::Instant::now();
     let lab_grad_raw = compute_lab_gradient(&data.lab_l, &data.lab_a, &data.lab_b, w as usize, h as usize);
-    let lab_grad_norm = percentile_normalize(&lab_grad_raw, P_LOW, P_HIGH);
+    let lab_grad_norm = percentile_normalize(&lab_grad_raw, p_low, p_high);
     save_gray_png(&lab_grad_norm, w, h, &out_dir.join("lab_gradient.png"))?;
     let t_lab = t0.elapsed();
 
     // ── (3) 频谱残差显著性 ──
     let t0 = std::time::Instant::now();
     let sr_raw = compute_spectral_residual(&data.lab_l, &data.lab_a, &data.lab_b, w as usize, h as usize);
-    let sr_norm = percentile_normalize(&sr_raw, P_LOW, P_HIGH);
+    let sr_norm = percentile_normalize(&sr_raw, p_low, p_high);
     save_gray_png(&sr_norm, w, h, &out_dir.join("spectral_residual.png"))?;
     let t_sr = t0.elapsed();
 
     // ── (4) Global light residual ──
     let t0 = std::time::Instant::now();
     let gl_l_raw = compute_global_light_residual(&data.hsl_l);
-    let gl_l_norm = percentile_normalize(&gl_l_raw, P_LOW, P_HIGH);
+    let gl_l_norm = percentile_normalize(&gl_l_raw, p_low, p_high);
     save_gray_png(&gl_l_norm, w, h, &out_dir.join("global_light_residual.png"))?;
     let t_gl = t0.elapsed();
 
     // ── (5) Global sat residual ──
     let t0 = std::time::Instant::now();
     let gl_s_raw = compute_global_sat_residual(&data.hsl_s);
-    let gl_s_norm = percentile_normalize(&gl_s_raw, P_LOW, P_HIGH);
+    let gl_s_norm = percentile_normalize(&gl_s_raw, p_low, p_high);
     save_gray_png(&gl_s_norm, w, h, &out_dir.join("global_sat_residual.png"))?;
     let t_gs = t0.elapsed();
 
     // ── (6) Local (Gaussian) light residual ──
     let t0 = std::time::Instant::now();
-    let loc_l_raw = compute_local_light_residual(&data.hsl_l, w, h);
-    let loc_l_norm = percentile_normalize(&loc_l_raw, P_LOW, P_HIGH);
+    let loc_l_raw = compute_local_light_residual(&data.hsl_l, w, h, params.gauss_sigma);
+    let loc_l_norm = percentile_normalize(&loc_l_raw, p_low, p_high);
     save_gray_png(&loc_l_norm, w, h, &out_dir.join("local_light_residual.png"))?;
     let t_ll = t0.elapsed();
 
     // ── (7) Local (Gaussian) sat residual ──
     let t0 = std::time::Instant::now();
-    let loc_s_raw = compute_local_sat_residual(&data.hsl_s, w, h);
-    let loc_s_norm = percentile_normalize(&loc_s_raw, P_LOW, P_HIGH);
+    let loc_s_raw = compute_local_sat_residual(&data.hsl_s, w, h, params.gauss_sigma);
+    let loc_s_norm = percentile_normalize(&loc_s_raw, p_low, p_high);
     save_gray_png(&loc_s_norm, w, h, &out_dir.join("local_sat_residual.png"))?;
     let t_ls = t0.elapsed();
 
@@ -978,11 +1004,14 @@ fn process_one_image(path: &Path, max_dim: u32, out_base: &Path) -> Result<Strin
         "local_light_residual",
         "local_sat_residual",
     ];
-    let weights = FusionWeights::default();
+
+    // ── 从 YAML 提取权重数组 ──
+    let add_w = weights_to_array(&params.weights_add);
+    let mul_w = weights_to_array(&params.weights_mul);
 
     // ── Hybrid Fusion ──
     let (fused_add, fused_mul, fused_hybrid) =
-        hybrid_fusion(&features, &weights, ALPHA, GAMMA, EPSILON);
+        hybrid_fusion(&features, &add_w, &mul_w, params.fusion.alpha, params.fusion.gamma, params.fusion.epsilon);
 
     save_gray_png(&fused_add, w, h, &out_dir.join("fused_add.png"))?;
     save_gray_png(&fused_mul, w, h, &out_dir.join("fused_softmul.png"))?;
@@ -996,12 +1025,16 @@ fn process_one_image(path: &Path, max_dim: u32, out_base: &Path) -> Result<Strin
         ("fused_hybrid", &fused_hybrid),
     ];
 
+    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+
     make_contact_sheet_full(
         &data.rgb,
         &feat_slices,
         &fused_slices,
         w,
         h,
+        &params.contact_sheet,
+        &ts,
         &out_dir.join("contact_sheet.png"),
     )?;
 
