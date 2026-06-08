@@ -23,7 +23,7 @@ max_dim: 720
 # sigma 越大 → 模糊越强 → 残差捕获更大尺度的局部变化（粗纹理/色块）。
 # sigma 越小 → 模糊越弱 → 残差只捕获细微边缘（细纹理/噪点）。
 # 建议范围: 5~80，默认 35.0 适合中等尺度的局部细节。
-gauss_sigma: 300.0
+gauss_sigma: 50.0
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 3. Percentile 归一化（所有特征图共用）
@@ -78,10 +78,10 @@ global_residual:
   light:
     compression: gamma
     trim_low: 0.0
-    trim_high: 100.0
+    trim_high: 95.0
     trimmed_mean_weight: 0.7
     median_weight: 0.3
-    gamma_power: 0.05     # 仅 compression=gamma 时有效
+    gamma_power: 1e-2     # 仅 compression=gamma 时有效
     # log_base: 2.718
   sat:
     compression: gamma
@@ -93,10 +93,41 @@ global_residual:
     # log_base: 2.718       # 仅 compression=log 时有效
 
 # ═════════════════════════════════════════════════════════════════════════════
+# 4b. 背景估计参数
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# background_lab_residual: 每个像素到边界背景 LAB 模型的距离。
+#   流程: 采样边界 band → 对 L*/a*/b* 各做 percentile trimmed mean + median
+#         → 加权欧氏距离 → percentile normalize
+#   border_band:       边界采样宽度（像素），默认 12
+#   trim_low/high:     LAB 各通道 trimmed mean 的百分位截断，默认 10.0 / 90.0
+#   trimmed_mean_weight / median_weight: 混合系数，默认 0.7 / 0.3
+#
+# background_connected_mask: BFS 从边界 flood fill 检测连通背景区域。
+#   connectedness:
+#     dist_threshold_factor:  BFS 阈值因子，阈值 = bg_max_dist × factor (默认 1.5)
+#     blur_sigma:             mask 软化 blur (默认 2.0，0=不 blur)
+#     strength:               前景置信度 = 1.0 - mask × strength (默认 0.85)
+#
+# 两个特征图均有独立权重（见下方 weights_add / weights_mul），
+# 可通过将权重调为 0 来禁用。
+
+background:
+  border_band: 20
+  trim_low: 2.0
+  trim_high: 98.0
+  trimmed_mean_weight: 0.5
+  median_weight: 0.5
+  connectedness:
+    dist_threshold_factor: 0.65
+    blur_sigma: 0.0
+    strength: 0.8
+
+# ═════════════════════════════════════════════════════════════════════════════
 # 5. 特征权重
 # ═════════════════════════════════════════════════════════════════════════════
 #
-# 两套独立的 7 维权重:
+# 两套独立的 9 维权重:
 #   - weights_add: 加法分支（加权求和）
 #   - weights_mul: 乘法分支（加权软乘法，各特征概率相乘）
 #
@@ -106,13 +137,15 @@ global_residual:
 # ┌──────────────────────┬────────┬──────────────────────────────────────────┐
 # │ 特征                  │ 默认值  │ 调大则更关注…                           │
 # ├──────────────────────┼────────┼──────────────────────────────────────────┤
-# │ dct                  │  0.25  │ 纯色/平滑背景区域（高频纹理少的地方）被压制 │
-# │ lab_grad             │  0.25  │ 结构边缘（线条、轮廓）被高亮              │
-# │ spectral             │  0.15  │ 全局视觉显著区域（突兀物体）被突出        │
-# │ global_light         │  0.30  │ 偏离整体亮度的色块（亮/暗异常区域）       │
-# │ global_sat           │  0.20  │ 偏离整体饱和度的色块（鲜艳/灰暗异常区域）  │
-# │ local_light          │  0.175 │ HSL 局部亮度细节（精细光影变化）          │
-# │ local_sat            │  0.075 │ HSL 局部饱和度细节（精细色彩变化）        │
+# │ dct                  │  0.22  │ 纯色/平滑背景区域（高频纹理少的地方）被压制 │
+# │ lab_grad             │  0.22  │ 结构边缘（线条、轮廓）被高亮              │
+# │ spectral             │  0.12  │ 全局视觉显著区域（突兀物体）被突出        │
+# │ global_light         │  0.05  │ 偏离整体亮度的色块（亮/暗异常区域）       │
+# │ global_sat           │  0.08  │ 偏离整体饱和度的色块（鲜艳/灰暗异常区域）  │
+# │ local_light          │  0.06  │ HSL 局部亮度细节（精细光影变化）          │
+# │ local_sat            │  0.06  │ HSL 局部饱和度细节（精细色彩变化）        │
+# │ background_lab       │  0.19  │ 偏离边界背景色的区域（前景物体）被突出   │
+# │ background_fg_conf   │  0.30  │ 非边界连通背景的区域（主体区域）被突出   │
 # └──────────────────────┴────────┴──────────────────────────────────────────┘
 #
 # 常见调参策略:
@@ -123,26 +156,30 @@ global_residual:
 #   • 可以某一分支全部设 0，等价于只用另一分支
 
 weights_add:
-  dct:          0.15
-  lab_grad:     0.25
-  spectral:     0.15
-  global_light: 0.10
-  global_sat:   0.30
-  local_light:  0.18
-  local_sat:    0.15
+  dct:                     0.0
+  lab_grad:                0.22
+  spectral:                0.12
+  global_light:            0.08
+  global_sat:              0.18
+  local_light:             0.06
+  local_sat:               0.16
+  background_lab:          0.20
+  background_fg_confidence: 0.11
 
 # 乘法分支权重（与加法独立，可完全不同）
 # 乘法分支 = 软乘法: score = product( (ε + (1-ε)*feat_i)^w_i )
 # 特性: 任一特征值接近 0 时，乘积会被"拉低"，所以乘法分支比加法更"保守"。
 #       适合用于"所有特征同时认可"的区域才高亮的场景。
 weights_mul:
-  dct:          0.05
-  lab_grad:     0.10
-  spectral:     0.15
-  global_light: 0.20
-  global_sat:   0.50
-  local_light:  0.45
-  local_sat:    0.45
+  dct:                     0.0
+  lab_grad:                0.10
+  spectral:                0.10
+  global_light:            0.13
+  global_sat:              0.25
+  local_light:             0.25
+  local_sat:               0.15
+  background_lab:          0.25
+  background_fg_confidence: 0.00
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 6. Hybrid Fusion 参数
@@ -173,7 +210,7 @@ fusion:
   #   ε→0 → 乘法效果更强（任一特征为 0 则乘积≈0，严格 AND 行为）。
   #   ε→1 → 乘法退化 ≈ 加法（baseline 起主导，特征贡献被稀释）。
   # 建议范围: 0.01~0.50，默认 0.15 平衡了严格性和稳健性。
-  epsilon: 0.20
+  epsilon: 0.15
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 7. 最终 Fuse 图过滤（阈值法 / 分位数法，互斥）
@@ -197,7 +234,7 @@ fusion:
 filter:
   method: threshold
   threshold: 0.5
-  normalize_before: true
+  normalize_before: false
   # method: quantile
   # quantile: 10.0
 
@@ -206,8 +243,51 @@ filter:
 # ═════════════════════════════════════════════════════════════════════════════
 
 contact_sheet:
-  cols:    4      # 列数（总格数 = cols × rows，默认 4×4=16 格容纳 1 原图 + 7 特征 + 6 融合 + 1 空位印时间戳）
+  cols:    5      # 列数（总格数 = cols × rows，默认 5×4=20 格容纳 1 原图 + 7 特征 + 6 融合 + 1 空位印时间戳）
   rows:    4      # 行数
   pad:     4      # 单元格间距（像素）
   thumb_w: 240    # 每个单元格的最大宽度（像素），高度按原图比例自动计算
   label_h: 16     # 单元格底部标签区域高度（像素）
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 9. DCT 纹理复杂度参数
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# high_freq_threshold: DCT 高频分量判定阈值。
+#   对每个 8×8 DCT 块，若 u+v >= high_freq_threshold 则视为高频系数。
+#   调大 (如 6~8) → 只有极高频率算纹理 → 平滑区更大，只保留最强纹理。
+#   调小 (如 2~3) → 更多系数算高频 → 纹理检测更敏感，噪声也可能被响应。
+#   建议范围: 2~8，默认 4（u+v >= 4 为高频，覆盖对角线以上所有系数的一半）。
+#
+# 注: DCT 块大小固定为 8（算法结构常量），不在配置中开放。
+
+dct:
+  high_freq_threshold: 4
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 10. 频谱残差显著性参数
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# mean_filter_kernel: 均值滤波核大小（奇数），作用于 FFT 对数幅度谱的平滑。
+#   核越大 → 平均谱越平滑 → 残差捕获更全局的谱异常（大尺度显著区域）。
+#   核越小 → 平均谱更贴近原始 → 残差捕获更精细的谱峰（纹理/边缘）。
+#   1 或 0 = 不滤波（退化到原始谱残差）。
+#   建议范围: 1~15，默认 3（3×3 均值滤波）。
+#
+# gaussian_sigma: IFFT 重构后的 saliency map Gaussian blur 标准差。
+#   用于平滑重构噪声，使显著区域更连续。
+#   sigma 越大 → 平滑更强 → 显著区域更模糊、更大片。
+#   sigma 越小 → 保留更多高频细节 → 显著图更精细。
+#   0 = 不 blur。
+#   建议范围: 0~10，默认 3.0。
+#
+# gamma: FFT 前对 L* 通道（亮度，始终 [0,1]）做 gamma 校正。a*、b* 不做处理。
+#   gamma 压缩 (gamma<1) 可提亮暗部细节，使低频区域的谱残差更显著。
+#   gamma 扩展 (gamma>1) 压制暗部。
+#   1.0 = 无变化。
+#   建议范围: 0.3~3.0，默认 1.0。
+
+spectral_residual:
+  mean_filter_kernel: 10
+  gaussian_sigma: 1.0
+  gamma: 1.3

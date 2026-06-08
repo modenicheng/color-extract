@@ -32,14 +32,18 @@ fn fft2d_real(data: &mut [Complex<f64>], w: usize, h: usize, forward: bool) {
     }
 }
 
-fn mean_filter_3x3(src: &[f64], w: usize, h: usize) -> Vec<f64> {
+fn mean_filter(src: &[f64], w: usize, h: usize, kernel: usize) -> Vec<f64> {
+    if kernel <= 1 {
+        return src.to_vec();
+    }
+    let r = kernel / 2;
     let mut out = vec![0.0; w * h];
     for y in 0..h {
         for x in 0..w {
             let mut sum = 0.0;
             let mut cnt = 0;
-            for dy in -1i32..=1 {
-                for dx in -1i32..=1 {
+            for dy in -(r as i32)..=(r as i32) {
+                for dx in -(r as i32)..=(r as i32) {
                     let px = (x as i32 + dx).clamp(0, w as i32 - 1) as usize;
                     let py = (y as i32 + dy).clamp(0, h as i32 - 1) as usize;
                     sum += src[py * w + px];
@@ -94,11 +98,18 @@ fn gaussian_blur_1d(src: &[f64], w: usize, h: usize, sigma: f64) -> Vec<f64> {
 }
 
 /// 对单通道计算频谱残差显著性，返回 [0,1] 归一化图
-fn spectral_residual_single(ch: &[f64], w: usize, h: usize) -> Vec<f64> {
+fn spectral_residual_single(ch: &[f64], w: usize, h: usize, mfk: u32, gs: f64, gamma: f64) -> Vec<f64> {
     let n = w * h;
 
+    // 0. Gamma 预处理（FFT 前）
+    let pre: Vec<f64> = if gamma == 1.0 {
+        ch.to_vec()
+    } else {
+        ch.iter().map(|&v| v.powf(gamma)).collect()
+    };
+
     // 1. FFT
-    let mut data: Vec<Complex<f64>> = ch.iter().map(|&v| Complex::new(v, 0.0)).collect();
+    let mut data: Vec<Complex<f64>> = pre.iter().map(|&v| Complex::new(v, 0.0)).collect();
     fft2d_real(&mut data, w, h, true);
 
     let mut log_amp = vec![0.0; n];
@@ -109,8 +120,8 @@ fn spectral_residual_single(ch: &[f64], w: usize, h: usize) -> Vec<f64> {
         phase[i] = c.im.atan2(c.re);
     }
 
-    // 2. 平均 log 幅度谱 (3×3 mean filter)
-    let avg_log_amp = mean_filter_3x3(&log_amp, w, h);
+    // 2. 平均 log 幅度谱 (mean filter)
+    let avg_log_amp = mean_filter(&log_amp, w, h, mfk as usize);
 
     // 3. 频谱残差: R = log_amp - avg_log_amp
     let mut residual = vec![0.0; n];
@@ -134,7 +145,9 @@ fn spectral_residual_single(ch: &[f64], w: usize, h: usize) -> Vec<f64> {
     let mut saliency: Vec<f64> = recon.iter().map(|c| c.re / norm).collect();
 
     // 6. Gaussian blur 去噪
-    saliency = gaussian_blur_1d(&saliency, w, h, 3.0);
+    if gs > 0.0 {
+        saliency = gaussian_blur_1d(&saliency, w, h, gs);
+    }
 
     // 7. 归一化到 [0, 1]
     let smin = saliency.iter().cloned().fold(f64::MAX, f64::min);
@@ -147,16 +160,26 @@ fn spectral_residual_single(ch: &[f64], w: usize, h: usize) -> Vec<f64> {
 }
 
 /// 计算频谱残差显著性：LAB 三通道分别计算后 L₂ 融合
+/// gamma 仅作用于 L* 通道（亮度，始终 [0,1]），a*、b* 跳过
 pub fn compute_spectral_residual(
     lab_l: &[f64],
     lab_a: &[f64],
     lab_b: &[f64],
     w: usize,
     h: usize,
+    mfk: u32,
+    gs: f64,
+    gamma: f64,
 ) -> Vec<f64> {
-    let sal_l = spectral_residual_single(lab_l, w, h);
-    let sal_a = spectral_residual_single(lab_a, w, h);
-    let sal_b = spectral_residual_single(lab_b, w, h);
+    // gamma 只作用于 L 通道
+    let lab_l_gamma = if gamma == 1.0 {
+        lab_l.to_vec()
+    } else {
+        lab_l.iter().map(|&v| v.powf(gamma)).collect()
+    };
+    let sal_l = spectral_residual_single(&lab_l_gamma, w, h, mfk, gs, 1.0);
+    let sal_a = spectral_residual_single(lab_a, w, h, mfk, gs, 1.0);
+    let sal_b = spectral_residual_single(lab_b, w, h, mfk, gs, 1.0);
 
     let n = w * h;
     let mut fused = Vec::with_capacity(n);

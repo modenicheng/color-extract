@@ -6,8 +6,6 @@ use rayon::prelude::*;
 
 /// DCT 块大小（算法结构常量，改需重新编译）
 const DCT_N: usize = 8;
-/// DCT 高频阈值: u+v >= 此值视为高频
-const DCT_THRESHOLD: usize = 4;
 
 fn dct_matrix() -> [[f64; DCT_N]; DCT_N] {
     let mut t = [[0.0; DCT_N]; DCT_N];
@@ -56,7 +54,7 @@ fn dct_2d(block: &[[f64; DCT_N]; DCT_N], t: &[[f64; DCT_N]; DCT_N]) -> [[f64; DC
     out
 }
 
-fn high_freq_ratio(coeffs: &[[f64; DCT_N]; DCT_N]) -> f64 {
+fn high_freq_ratio(coeffs: &[[f64; DCT_N]; DCT_N], threshold: usize) -> f64 {
     let mut total_ac = 0.0;
     let mut high_freq = 0.0;
     for u in 0..DCT_N {
@@ -66,7 +64,7 @@ fn high_freq_ratio(coeffs: &[[f64; DCT_N]; DCT_N]) -> f64 {
             }
             let e = coeffs[u][v] * coeffs[u][v];
             total_ac += e;
-            if u + v >= DCT_THRESHOLD {
+            if u + v >= threshold {
                 high_freq += e;
             }
         }
@@ -75,7 +73,7 @@ fn high_freq_ratio(coeffs: &[[f64; DCT_N]; DCT_N]) -> f64 {
 }
 
 /// 计算 DCT 纹理复杂度图 (高频能量占比)
-pub fn compute_dct_complexity(gray: &[f64], w: usize, h: usize) -> Vec<f64> {
+pub fn compute_dct_complexity(gray: &[f64], w: usize, h: usize, threshold: usize) -> Vec<f64> {
     let offset = (DCT_N / 2) as i32;
     let t = dct_matrix();
     let mut map = vec![0.0; w * h];
@@ -91,7 +89,7 @@ pub fn compute_dct_complexity(gray: &[f64], w: usize, h: usize) -> Vec<f64> {
                 }
             }
             let coeffs = dct_2d(&block, &t);
-            row[x] = high_freq_ratio(&coeffs);
+            row[x] = high_freq_ratio(&coeffs, threshold);
         }
     });
     map

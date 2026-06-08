@@ -10,7 +10,7 @@ pub fn percentile_normalize(data: &[f64], p_low: f64, p_high: f64) -> Vec<f64> {
         return Vec::new();
     }
     let mut sorted = data.to_vec();
-    sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Less));
     let n = sorted.len();
     let lo_idx = ((n as f64) * p_low / 100.0).floor() as usize;
     let hi_idx = ((n as f64) * p_high / 100.0).ceil() as usize;
@@ -23,16 +23,21 @@ pub fn percentile_normalize(data: &[f64], p_low: f64, p_high: f64) -> Vec<f64> {
         .collect()
 }
 
-/// 从 Params 中提取 7 元素权重数组
-pub fn weights_to_array(w: &Weights) -> [f64; 7] {
-    [w.dct, w.lab_grad, w.spectral, w.global_light, w.global_sat, w.local_light, w.local_sat]
+/// 从 Params 中提取权重数组（长度 = feature 数量）
+pub fn weights_to_array(w: &Weights) -> Vec<f64> {
+    vec![
+        w.dct, w.lab_grad, w.spectral,
+        w.global_light, w.global_sat,
+        w.local_light, w.local_sat,
+        w.background_lab, w.background_fg_confidence,
+    ]
 }
 
 /// Hybrid Fusion: 加权加法分支 + 软乘法分支 混合，各自独立权重
 pub fn hybrid_fusion(
     features: &[&[f64]],
-    add_w: &[f64; 7],
-    mul_w: &[f64; 7],
+    add_w: &[f64],
+    mul_w: &[f64],
     alpha: f64,
     gamma: f64,
     epsilon: f64,

@@ -17,6 +17,11 @@ pub struct Params {
     pub fusion: FusionParams,
     pub filter: Option<FilterParams>,
     pub contact_sheet: ContactSheetParams,
+    #[serde(default)]
+    pub spectral_residual: SpectralResidualParams,
+    #[serde(default)]
+    pub dct: DctParams,
+    pub background: BackgroundParams,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,6 +39,8 @@ pub struct Weights {
     pub global_sat: f64,
     pub local_light: f64,
     pub local_sat: f64,
+    pub background_lab: f64,
+    pub background_fg_confidence: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,6 +85,46 @@ fn default_gamma_power() -> f64 { 0.5 }
 fn default_log_base() -> f64 { std::f64::consts::E }
 
 #[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct SpectralResidualParams {
+    /// 均值滤波核大小（奇数），1 或 0 = 不滤波
+    pub mean_filter_kernel: u32,
+    /// 频谱残差 IFFT 后的 Gaussian blur sigma
+    pub gaussian_sigma: f64,
+    /// 输入 gamma 校正指数（FFT 前对像素值做 powf），1.0 = 无变化
+    pub gamma: f64,
+}
+
+impl Default for SpectralResidualParams {
+    fn default() -> Self {
+        Self {
+            mean_filter_kernel: 3,
+            gaussian_sigma: 3.0,
+            gamma: 1.0,
+        }
+    }
+}
+
+// =============================================================================
+// DCT 纹理复杂度参数
+// =============================================================================
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct DctParams {
+    /// 高频判定阈值：u+v >= 此值视为高频分量。调大→更严格（仅极高频率算纹理），调小→更宽松
+    pub high_freq_threshold: usize,
+}
+
+impl Default for DctParams {
+    fn default() -> Self {
+        Self {
+            high_freq_threshold: 4,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ContactSheetParams {
     pub cols: u32,
     pub rows: u32,
@@ -93,6 +140,59 @@ pub struct FilterParams {
     pub normalize_before: Option<bool>,
     pub quantile: Option<f64>,
 }
+
+// =============================================================================
+// Background 参数
+// =============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct BackgroundParams {
+    /// 边界采样 band 宽度（像素），默认 3
+    #[serde(default = "default_border_band")]
+    pub border_band: u32,
+    /// 低端 trim 百分位，默认 10.0
+    #[serde(default = "default_bg_trim_low")]
+    pub trim_low: f64,
+    /// 高端 trim 百分位，默认 90.0
+    #[serde(default = "default_bg_trim_high")]
+    pub trim_high: f64,
+    /// trimmed_mean 混合系数，默认 0.7
+    #[serde(default = "default_bg_trimmed_mean_weight")]
+    pub trimmed_mean_weight: f64,
+    /// median 混合系数，默认 0.3
+    #[serde(default = "default_bg_median_weight")]
+    pub median_weight: f64,
+    /// 连通性参数
+    #[serde(default)]
+    pub connectedness: BackgroundConnectednessParams,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct BackgroundConnectednessParams {
+    /// BFS 距离阈值 = bg_max_dist × dist_threshold_factor，默认 1.5
+    pub dist_threshold_factor: f64,
+    /// mask blur sigma（0=不 blur），默认 2.0
+    pub blur_sigma: f32,
+    /// 前景置信度 strength，默认 0.85
+    pub strength: f64,
+}
+
+impl Default for BackgroundConnectednessParams {
+    fn default() -> Self {
+        Self {
+            dist_threshold_factor: 1.5,
+            blur_sigma: 2.0,
+            strength: 0.85,
+        }
+    }
+}
+
+fn default_border_band() -> u32 { 3 }
+fn default_bg_trim_low() -> f64 { 10.0 }
+fn default_bg_trim_high() -> f64 { 90.0 }
+fn default_bg_trimmed_mean_weight() -> f64 { 0.7 }
+fn default_bg_median_weight() -> f64 { 0.3 }
 
 /// 校验 filter 配置：互斥检查 + 值域检查
 pub fn validate_filter(filter: &FilterParams) {

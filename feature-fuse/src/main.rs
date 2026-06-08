@@ -8,6 +8,7 @@ mod dct;
 mod gradient;
 mod spectral;
 mod residual;
+mod background;
 mod fusion;
 mod render;
 
@@ -24,6 +25,11 @@ use crate::spectral::compute_spectral_residual;
 use crate::residual::{
     compute_global_light_residual, compute_global_sat_residual,
     compute_local_light_residual, compute_local_sat_residual,
+};
+use crate::background::{
+    compute_background_lab_residual,
+    compute_background_connected_mask,
+    mask_to_foreground_confidence,
 };
 
 use crate::render::{save_gray_png, save_rgb_png, make_contact_sheet_full};
@@ -138,7 +144,7 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
     let out_dir = out_base.join(&stem);
     std::fs::create_dir_all(&out_dir)?;
 
-    println!("  {} ({}×{}) — 7 features …", stem, w, h);
+    println!("  {} ({}×{}) — 9 features …", stem, w, h);
 
     // ── 保存 resize 后的原图 ──
     save_rgb_png(&data.rgb, w, h, &out_dir.join("resized.png"))?;
@@ -154,7 +160,7 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
 
     // ── (1) DCT 纹理复杂度 ──
     let t0 = std::time::Instant::now();
-    let dct_raw = compute_dct_complexity(&gray, w as usize, h as usize);
+    let dct_raw = compute_dct_complexity(&gray, w as usize, h as usize, params.dct.high_freq_threshold);
     let dct_norm = percentile_normalize(&dct_raw, p_low, p_high);
     save_gray_png(&dct_norm, w, h, &out_dir.join("dct_complexity.png"))?;
     let t_dct = t0.elapsed();
@@ -168,7 +174,12 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
 
     // ── (3) 频谱残差显著性 ──
     let t0 = std::time::Instant::now();
-    let sr_raw = compute_spectral_residual(&data.lab_l, &data.lab_a, &data.lab_b, w as usize, h as usize);
+    let sr_raw = compute_spectral_residual(
+        &data.lab_l, &data.lab_a, &data.lab_b, w as usize, h as usize,
+        params.spectral_residual.mean_filter_kernel,
+        params.spectral_residual.gaussian_sigma,
+        params.spectral_residual.gamma,
+    );
     let sr_norm = percentile_normalize(&sr_raw, p_low, p_high);
     save_gray_png(&sr_norm, w, h, &out_dir.join("spectral_residual.png"))?;
     let t_sr = t0.elapsed();
@@ -201,8 +212,25 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
     save_gray_png(&loc_s_norm, w, h, &out_dir.join("local_sat_residual.png"))?;
     let t_ls = t0.elapsed();
 
+    // ── (8) Background LAB residual ──
+    let t0 = std::time::Instant::now();
+    let bg_raw = compute_background_lab_residual(
+        &data.lab_l, &data.lab_a, &data.lab_b, w, h, &params.background,
+    );
+    let bg_norm = percentile_normalize(&bg_raw, p_low, p_high);
+    save_gray_png(&bg_norm, w, h, &out_dir.join("background_lab_residual.png"))?;
+    let t_bgl = t0.elapsed();
+
+    // ── (9) Background connected mask + foreground confidence ──
+    let t0 = std::time::Instant::now();
+    let bg_mask = compute_background_connected_mask(&bg_raw, w, h, &params.background);
+    save_gray_png(&bg_mask, w, h, &out_dir.join("background_connected_mask.png"))?;
+    let bg_fg = mask_to_foreground_confidence(&bg_mask, params.background.connectedness.strength);
+    save_gray_png(&bg_fg, w, h, &out_dir.join("background_foreground_confidence.png"))?;
+    let t_bgc = t0.elapsed();
+
     println!(
-        "    DCT={:.1}s LAB={:.1}s SR={:.1}s GL={:.1}s GS={:.1}s LL={:.1}s LS={:.1}s — fusion …",
+        "    DCT={:.1}s LAB={:.1}s SR={:.1}s GL={:.1}s GS={:.1}s LL={:.1}s LS={:.1}s BGL={:.1}s BGC={:.1}s — fusion …",
         t_dct.as_secs_f64(),
         t_lab.as_secs_f64(),
         t_sr.as_secs_f64(),
@@ -210,10 +238,12 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
         t_gs.as_secs_f64(),
         t_ll.as_secs_f64(),
         t_ls.as_secs_f64(),
+        t_bgl.as_secs_f64(),
+        t_bgc.as_secs_f64(),
     );
 
     // ── 归一化后的所有特征 ──
-    let features: [&[f64]; 7] = [
+    let features: [&[f64]; 9] = [
         &dct_norm,
         &lab_grad_norm,
         &sr_norm,
@@ -221,8 +251,10 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
         &gl_s_norm,
         &loc_l_norm,
         &loc_s_norm,
+        &bg_norm,
+        &bg_fg,
     ];
-    let feature_names: [&str; 7] = [
+    let feature_names: [&str; 9] = [
         "dct_complexity",
         "lab_gradient",
         "spectral_residual",
@@ -230,6 +262,8 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
         "global_sat_residual",
         "local_light_residual",
         "local_sat_residual",
+        "background_lab_residual",
+        "background_foreground_confidence",
     ];
 
     // ── 从 YAML 提取权重数组 ──
@@ -283,7 +317,7 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
         h,
         &params.contact_sheet,
         &ts,
-        &out_dir.join("contact_sheet.png"),
+        &out_base.join(format!("contact_sheet_{stem}.png")),
     )?;
 
     println!("    ✓ {stem} — all outputs in {}/", out_dir.display());
