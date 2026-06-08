@@ -1,13 +1,16 @@
 # 🎨 Color Extract — 图片主色/调色盘提取工具
 
-基于 Rust 的高性能图片颜色提取与可视化 demo，包含 **4 个独立 crate**：
+基于 Rust 的高性能图片颜色提取与可视化 demo，包含 **8 个独立 crate**：
 
 | Crate | 用途 |
 |-------|------|
 | **`dct-extract`** | DCT 增强颜色提取 —— 结合 DCT 纹理复杂度和空间信息的高级评分系统 |
 | **`lab-gradient`** | LAB 空间 Sobel 梯度可视化 —— 将三通道梯度映射到 RGB 单图 |
-| **`dct-viz`** | DCT 纹理复杂度可视化 —— 8×8 块 DCT 高频能量占比热力图 + 原图叠加 |
+| **`dct-viz`** | DCT 纹理复杂度可视化 —— 8×8 块 DCT 高频能量占比热力图/灰度图/原图叠加 |
 | **`spectral-residual`** | 频谱残差显著性检测 —— 2D FFT 频域分析 + 热力图/叠加图 |
+| **`global-residual`** | 全局均值残差 —— 每像素相对图像全局均值的偏差（HSL + LAB） |
+| **`residual-viz`** | 高斯残差可视化 —— 原图与高斯模糊的差分（饱和度/亮度/LAB 三通道） |
+| **`img-compare`** | 图片对比合成 Web 服务器 —— 多图层叠加合成 + 交互式对比查看 |
 | **`color-extract` (根)** | 经典调色盘提取 —— 4 种算法 × 5 个色彩空间并行对比 |
 
 ---
@@ -19,10 +22,11 @@
 - 加载 `imgs/` 下的图片，**Lanczos3 缩放至 ≤1024×1024**（保持比例）
 - 转灰度后对每个像素取 8×8 邻域做 **Type-II DCT**（与 `dct-extract` 实现一致）
 - 计算 **高频能量占比** `c = Σ_{u+v≥4} F(u,v)² / Σ_{all except DC} F²`，取值范围 [0,1]
-- 每张图输出 **2 种可视化**：
+- 每张图输出 **3 种可视化**：
   | 文件 | 说明 |
   |------|------|
   | `{name}_dct_heat.png` | 彩色热力图：蓝(平滑) → 青 → 黄 → 红(纹理丰富) |
+  | `{name}_dct_gray.png` | 纯灰度图：复杂度值直接映射到亮度，无分段/overlay |
   | `{name}_dct_overlay.png` | 原图灰度叠加：平滑区≈原图灰，纹理区亮绿/青色高亮 |
 - **Rayon 多线程**并行计算每个像素的 DCT
 
@@ -32,7 +36,7 @@
 cargo run --release -p dct-viz
 ```
 
-输出在 `output/dct_viz/{filename}_dct_heat.png` 和 `*_dct_overlay.png`。
+输出在 `output/dct_viz/` 目录下。
 
 ## 用途
 
@@ -128,6 +132,90 @@ cargo run --release -p dct-extract -- <max_dim> <output_path>
 
 ---
 
+# `global-residual` — 全局均值残差
+
+## 功能
+
+- 加载 `imgs/` 下的图片，缩放至 ≤1024×1024
+- 分别计算 HSL 饱和度、HSL 亮度、CIELAB 三通道的**全局均值**
+- 每像素计算 |pixel − global_mean| 残差
+- 每张图输出 **3 张灰度/彩色残差图**：
+  | 文件 | 说明 |
+  |------|------|
+  | `{name}_sat.png` | HSL 饱和度残差（灰度） |
+  | `{name}_light.png` | HSL 亮度残差（灰度） |
+  | `{name}_lab.png` | LAB 三通道残差映射 RGB：R=L\* 残差, G=a\* 残差, B=b\* 残差 |
+
+## 运行
+
+```bash
+cargo run --release -p global-residual
+cargo run --release -p global-residual -- [max_dim]
+```
+
+输出在 `output/global-residual/`。
+
+## 用途
+
+- 找出图片中偏离整体色调/亮度的异常区域
+- 辅助分析色彩分布均匀性
+
+---
+
+# `residual-viz` — 高斯残差可视化
+
+## 功能
+
+- 加载 `imgs/` 下的图片，缩放至 ≤1024×1024
+- 分别计算 HSL 饱和度、HSL 亮度、CIELAB L\*a\*b\* 通道
+- 对每个通道做 **Gaussian 模糊**（可配 sigma，默认 25）
+- 计算 |original − blurred| 残差
+- 每张图输出 **3 张残差图**：
+  | 文件 | 说明 |
+  |------|------|
+  | `{name}_sat.png` | 饱和度残差（灰度） |
+  | `{name}_light.png` | 亮度残差（灰度） |
+  | `{name}_lab.png` | LAB 残差映射 RGB：R=Lₓ, G=aₓ, B=bₓ |
+
+## 运行
+
+```bash
+cargo run --release -p residual-viz
+cargo run --release -p residual-viz -- [sigma] [max_dim]
+```
+
+输出在 `output/residual-viz/`。
+
+## 原理
+
+高斯模糊相当于低通滤波，|原图 − 模糊| 滤掉了平滑背景，保留**局部细节/边缘**。与全局均值残差不同，高斯残差捕捉的是**局部**偏离，而非全局偏离。
+
+---
+
+# `img-compare` — 图片对比合成 Web 服务器
+
+## 功能
+
+- 扫描 `imgs/` 和 `output/` 下所有图片，按文件名前缀自动分组
+- 启动 Web 服务，提供交互式页面：
+  - 左侧分组列表 + 搜索过滤
+  - 右侧图片网格，可多选
+  - Add / Multiply 两种合成模式
+  - **每层独立权重** + 全局权重
+  - **源像素亮度阈值**：低于阈值的像素不参与合成
+  - **结果亮度阈值**：合成后低于阈值的像素置黑
+  - 实时合成预览 canvas
+
+## 运行
+
+```bash
+cargo run -p img-compare
+```
+
+服务访问 `http://127.0.0.1:3000`。
+
+---
+
 # `lab-gradient` — LAB 空间 Sobel 梯度可视化
 
 ## 功能
@@ -213,15 +301,27 @@ color-extract/
 ├── dct-viz/                       # DCT 纹理复杂度可视化
 │   ├── Cargo.toml
 │   └── src/
-│       └── main.rs                # 加载→缩放→DCT→热力图+叠加图输出
+│       └── main.rs                # 加载→缩放→DCT→热力图+灰度图+叠加图输出
 ├── spectral-residual/            # 频谱残差显著性检测
 │   ├── Cargo.toml
 │   └── src/
 │       └── main.rs                # 加载→缩放→FFT→频谱残差→IFFT→热力图+叠加图
+├── global-residual/              # 全局均值残差
+│   ├── Cargo.toml
+│   └── src/
+│       └── main.rs                # 加载→缩放→HSL/LAB→全局均值→残差图
+├── residual-viz/                 # 高斯残差可视化
+│   ├── Cargo.toml
+│   └── src/
+│       └── main.rs                # 加载→缩放→HSL/LAB→高斯模糊→|原图-模糊|→残差图
 ├── lab-gradient/                  # LAB Sobel 梯度可视化
 │   ├── Cargo.toml
 │   └── src/
 │       └── main.rs                # 加载→缩放→LAB→Sobel→RGB 输出
+├── img-compare/                   # 图片对比合成 Web 服务
+│   ├── Cargo.toml
+│   └── src/
+│       └── main.rs                # actix-web 服务 + 内嵌 HTML 交互页面
 ├── src/                           # 经典调色盘提取
 │   ├── main.rs
 │   ├── img.rs
@@ -240,6 +340,8 @@ color-extract/
 │   ├── results-dct.html           # DCT 增强报告
 │   ├── lab_gradient/              # LAB 梯度可视化
 │   ├── dct_viz/                   # DCT 复杂度可视化
+│   ├── global-residual/           # 全局均值残差图
+│   ├── residual-viz/              # 高斯残差图
 │   └── spectral_residual/         # 频谱残差显著性图
 └── README.md
 ```
@@ -266,12 +368,14 @@ color-extract/
 
 | Crate | 用途 |
 |-------|------|
+| `actix-web` / `actix-files` | Web 服务器 / 静态文件 (img-compare) |
 | `rustfft` 6 | 2D FFT 频谱残差计算 |
 | `image` 0.25 | 图片加载/缩放 |
 | `palette` 0.7 | CIELAB、Oklab、HSL、CAM16 等色彩空间 |
 | `linfa-clustering` 0.8 | KMeans++ / Mini-Batch KMeans |
 | `ndarray` 0.16 | 矩阵计算 |
 | `rayon` 1 | 多线程并行 |
+| `serde` 1 | JSON 序列化 (img-compare) |
 | `base64` 0.22 | 图片内嵌 HTML |
 | `chrono` 0.4 | 时间戳 |
 | `rand_xoshiro` 0.6 | 确定性随机数种子 |

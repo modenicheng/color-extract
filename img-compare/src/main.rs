@@ -219,6 +219,12 @@ body { background:var(--bg); color:var(--text); font-family:system-ui,sans-serif
         <label>全局权重:</label>
         <input type="range" id="global-weight" min="0" max="200" value="100" oninput="updateGlobalWeight();recomposite()" style="width:100px;">
         <span id="global-weight-val" style="font-size:12px;color:var(--dim);">1.00</span>
+        <label>源阈值:</label>
+        <input type="range" id="threshold" min="0" max="255" value="0" oninput="updateThreshold();recomposite()" style="width:80px;">
+        <span id="threshold-val" style="font-size:12px;color:var(--dim);">0</span>
+        <label>结果阈值:</label>
+        <input type="range" id="result-threshold" min="0" max="255" value="0" oninput="updateResultThreshold();recomposite()" style="width:80px;">
+        <span id="result-threshold-val" style="font-size:12px;color:var(--dim);">0</span>
         <button onclick="toggleAll(true)">全选</button>
         <button onclick="toggleAll(false)">全不选</button>
         <button onclick="recomposite()">🔃 刷新合成</button>
@@ -313,6 +319,16 @@ function onCheck(i) {
 function updateGlobalWeight() {
     const v = document.getElementById('global-weight').value/100;
     document.getElementById('global-weight-val').textContent = v.toFixed(2);
+}
+
+function updateThreshold() {
+    const v = document.getElementById('threshold').value;
+    document.getElementById('threshold-val').textContent = v;
+}
+
+function updateResultThreshold() {
+    const v = document.getElementById('result-threshold').value;
+    document.getElementById('result-threshold-val').textContent = v;
 }
 
 function toggleAll(on) {
@@ -417,6 +433,8 @@ function recomposite() {
             }
         }
 
+        const thr = document.getElementById('threshold').value;
+
         for (let li=0; li<layers.length; li++) {
             const el = imgs[li];
             if (!el.naturalWidth) continue;
@@ -427,16 +445,32 @@ function recomposite() {
 
             if (mode==='add') {
                 for (let p=0; p<rdata.length; p+=4) {
+                    const bright = 0.299*src[p] + 0.587*src[p+1] + 0.114*src[p+2];
+                    if (bright < thr) continue;
                     rdata[p]   = Math.min(255, rdata[p]   + src[p]   * lw);
                     rdata[p+1] = Math.min(255, rdata[p+1] + src[p+1] * lw);
                     rdata[p+2] = Math.min(255, rdata[p+2] + src[p+2] * lw);
                 }
             } else { // multiply
                 for (let p=0; p<rdata.length; p+=4) {
-                    // weighted multiply: result *= (src/255)^w
-                    rdata[p]   *= Math.pow(src[p]   / 255, lw);
-                    rdata[p+1] *= Math.pow(src[p+1] / 255, lw);
-                    rdata[p+2] *= Math.pow(src[p+2] / 255, lw);
+                    const bright = 0.299*src[p] + 0.587*src[p+1] + 0.114*src[p+2];
+                    const f = bright < thr ? 0 : 1; // below threshold: skip this layer's contribution
+                    // weighted multiply: result *= (src/255)^(lw*f)
+                    const wgt = lw * f;
+                    rdata[p]   *= Math.pow(src[p]   / 255, wgt);
+                    rdata[p+1] *= Math.pow(src[p+1] / 255, wgt);
+                    rdata[p+2] *= Math.pow(src[p+2] / 255, wgt);
+                }
+            }
+        }
+
+        // 结果阈值: 亮度低于阈值的像素置黑
+        const rthr = document.getElementById('result-threshold').value;
+        if (rthr > 0) {
+            for (let p=0; p<rdata.length; p+=4) {
+                const bright = 0.299*rdata[p] + 0.587*rdata[p+1] + 0.114*rdata[p+2];
+                if (bright < rthr) {
+                    rdata[p]=0; rdata[p+1]=0; rdata[p+2]=0;
                 }
             }
         }
