@@ -1185,6 +1185,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8a5a9a0ff0086c7a148acb942baaabeadf9504d10400b5a05645853729b9cd2"
 
 [[package]]
+name = "impression-color-extract"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "font8x8",
+ "image",
+ "palette",
+ "rand 0.8.6",
+ "rand_xoshiro",
+ "rayon",
+ "rustfft",
+ "serde",
+ "serde_yaml",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,17 @@
+[package]
+name = "impression-color-extract"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "rayon"] }
+palette = "0.7"
+rustfft = "6"
+rayon = "1"
+anyhow = "1"
+font8x8 = "0.2"
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+rand = "0.8"
+rand_xoshiro = "0.6"
