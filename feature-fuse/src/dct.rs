@@ -74,7 +74,7 @@ fn high_freq_ratio(coeffs: &[[f64; DCT_N]; DCT_N], threshold: usize) -> f64 {
 
 /// 计算 DCT 纹理复杂度图 (高频能量占比)
 pub fn compute_dct_complexity(gray: &[f64], w: usize, h: usize, threshold: usize) -> Vec<f64> {
-    let offset = (DCT_N / 2) as i32;
+    let offset = (DCT_N / 2) as i32; // 4 — 对 8×8 偶尺寸块轻微偏左上（无法完美居中，±0.5px 偏差在视觉上不可见）
     let t = dct_matrix();
     let mut map = vec![0.0; w * h];
 

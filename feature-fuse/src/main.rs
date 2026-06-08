@@ -45,7 +45,7 @@ fn main() -> Result<()> {
 
     // ── 校验 filter 配置（互斥检查）──
     if let Some(ref filter) = params.filter {
-        validate_filter(filter);
+        validate_filter(filter)?;
         println!("  filter: method={} ✓", filter.method);
     }
 
@@ -286,8 +286,8 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
             apply_filter(&fused_hybrid, flt),
         )
     } else {
-        let n = (w * h) as usize;
-        (vec![0.0; n], vec![0.0; n], vec![0.0; n])
+        // 无 filter 时直接复用未过滤版本，避免合成图全黑
+        (fused_add.clone(), fused_mul.clone(), fused_hybrid.clone())
     };
 
     if params.filter.is_some() {

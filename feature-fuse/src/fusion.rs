@@ -47,11 +47,19 @@ pub fn hybrid_fusion(
 
     let n = features[0].len();
 
-    // 归一化加法/乘法权重
+    // 归一化加法/乘法权重（total=0 时该分支退化为全零）
     let add_total: f64 = add_w.iter().sum();
-    let add_norm: Vec<f64> = add_w.iter().map(|&w| w / add_total).collect();
+    let add_norm: Vec<f64> = if add_total > 0.0 {
+        add_w.iter().map(|&w| w / add_total).collect()
+    } else {
+        vec![0.0; add_w.len()]
+    };
     let mul_total: f64 = mul_w.iter().sum();
-    let mul_norm: Vec<f64> = mul_w.iter().map(|&w| w / mul_total).collect();
+    let mul_norm: Vec<f64> = if mul_total > 0.0 {
+        mul_w.iter().map(|&w| w / mul_total).collect()
+    } else {
+        vec![0.0; mul_w.len()]
+    };
 
     let mut add_score = vec![0.0; n];
     let mut mul_score = vec![0.0; n];
@@ -189,12 +197,16 @@ pub fn kmeans_impression_color(
             .sum();
 
         if total <= 0.0 {
-            break; // 所有剩余点重合，提前退出
+            // 所有剩余点与已有质心重合 — 补足质心数后退出
+            while centroids.len() < k {
+                centroids.push(centroids[0]);
+            }
+            break;
         }
 
-        // 按 D² 权重随机选下一个质心
+        // 按 D² 权重随机选下一个质心（idx 默认 n-1，防止浮点舍入导致选到 idx=0）
         let mut r = rng.next_f64() * total;
-        let mut idx = 0;
+        let mut idx = n - 1;
         for i in 0..n {
             r -= min_d2[i];
             if r <= 0.0 { idx = i; break; }

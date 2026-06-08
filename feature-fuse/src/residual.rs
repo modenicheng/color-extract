@@ -72,7 +72,7 @@ fn robust_center(data: &[f64], rcp: &RobustCenterParams) -> f64 {
     let mut sum = 0.0_f64;
     let mut count = 0usize;
     for &v in &compressed {
-        if v > p_low && v < p_high {
+        if v >= p_low && v <= p_high {
             sum += v;
             count += 1;
         }

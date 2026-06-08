@@ -216,42 +216,41 @@ fn default_bg_trimmed_mean_weight() -> f64 { 0.7 }
 fn default_bg_median_weight() -> f64 { 0.3 }
 
 /// 校验 filter 配置：互斥检查 + 值域检查
-pub fn validate_filter(filter: &FilterParams) {
+pub fn validate_filter(filter: &FilterParams) -> Result<(), anyhow::Error> {
     match filter.method.as_str() {
         "threshold" => {
             if filter.quantile.is_some() {
-                panic!(
+                anyhow::bail!(
                     "Filter config conflict: method='{}' but quantile is also set. \
                      These two methods are mutually exclusive.",
                     filter.method
                 );
             }
-            let t = filter.threshold.unwrap_or_else(|| {
-                panic!("filter.threshold is required when method='threshold'");
-            });
-            assert!(
-                (0.0..=1.0).contains(&t),
-                "filter.threshold must be in [0, 1], got {t}"
-            );
+            let t = filter.threshold.ok_or_else(|| {
+                anyhow::anyhow!("filter.threshold is required when method='threshold'")
+            })?;
+            if !(0.0..=1.0).contains(&t) {
+                anyhow::bail!("filter.threshold must be in [0, 1], got {t}");
+            }
         }
         "quantile" => {
             if filter.threshold.is_some() {
-                panic!(
+                anyhow::bail!(
                     "Filter config conflict: method='{}' but threshold is also set. \
                      These two methods are mutually exclusive.",
                     filter.method
                 );
             }
-            let q = filter.quantile.unwrap_or_else(|| {
-                panic!("filter.quantile is required when method='quantile'");
-            });
-            assert!(
-                q > 0.0 && q <= 100.0,
-                "filter.quantile must be in (0, 100], got {q}"
-            );
+            let q = filter.quantile.ok_or_else(|| {
+                anyhow::anyhow!("filter.quantile is required when method='quantile'")
+            })?;
+            if !(q > 0.0 && q <= 100.0) {
+                anyhow::bail!("filter.quantile must be in (0, 100], got {q}");
+            }
         }
-        other => panic!("filter.method must be 'threshold' or 'quantile', got '{other}'"),
+        other => anyhow::bail!("filter.method must be 'threshold' or 'quantile', got '{other}'"),
     }
+    Ok(())
 }
 
 pub fn load_params(path: &Path) -> Result<Params> {
