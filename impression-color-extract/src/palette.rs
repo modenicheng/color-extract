@@ -53,13 +53,21 @@ pub fn extract_palette(
 
     let k = params.n_colors.min(pixels.len()).max(1);
 
-    match params.algorithm.as_str() {
+    let mut entries = match params.algorithm.as_str() {
         "kmeanspp" => kmeans_pp(&pixels, k, &weights),
         "minibatch" => mini_batch_kmeans(&pixels, k, &weights),
         "mediancut" => median_cut_palette(&pixels, k, &weights),
         "octree" => octree_palette(&pixels, k),
         _ => kmeans_pp(&pixels, k, &weights),
-    }
+    };
+
+    entries.sort_by(|a, b| {
+        b.proportion
+            .partial_cmp(&a.proportion)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    entries.truncate(params.n_colors.max(1));
+    entries
 }
 
 // ── KMeans++ ──

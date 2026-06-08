@@ -33,6 +33,8 @@ pub struct ColorPartitionParams {
     pub min_cluster_area_ratio: f64,
     pub border_band: u32,
     pub bg_score_threshold: f64,
+    pub bg_connect_threshold: f64,
+    pub max_bg_ratio: f64,
     pub open_radius: u32,
     pub close_radius: u32,
     pub erode_radius: u32,

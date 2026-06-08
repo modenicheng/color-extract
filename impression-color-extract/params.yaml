@@ -31,7 +31,9 @@ color_partition:
   variance_threshold: 0.01
   min_cluster_area_ratio: 0.005
   border_band: 12
-  bg_score_threshold: 0.55
+  bg_score_threshold: 0.50
+  bg_connect_threshold: 0.08
+  max_bg_ratio: 0.85
   open_radius: 2
   close_radius: 2
   erode_radius: 1
@@ -53,7 +55,7 @@ feature_weights:
 # ═════════════════════════════════════════════════════════════════════════════
 palette:
   algorithm: kmeanspp    # kmeanspp | minibatch | mediancut | octree
-  n_colors: 10
+  n_colors: 1
   min_fg_ratio: 0.05
 
 # ═════════════════════════════════════════════════════════════════════════════

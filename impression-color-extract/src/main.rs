@@ -145,17 +145,14 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
     if has_partition {
         save_rgb_png(&pr.color_clusters_rgb, w, h, &out_dir.join("color_clusters.png"))?;
 
-        // 背景候选 = bg_mask_raw（直接用 bg_mask 的特征做可视化）
-        let _bg_candidate: Vec<f64> = pr.clusters.iter()
-            .flat_map(|c| {
-                let v = if c.bg_score > 0.5 { 1.0 } else { 0.0 };
-                std::iter::repeat(v).take(c.indices.len())
-            })
-            .collect();
         // 由于 clusters 顺序可能变化，重新构建与像素顺序一致的 bg_candidate
         let mut bg_candidate_full = vec![0.0; n_pixels];
         for c in &pr.clusters {
-            let v = if c.bg_score > 0.5 { 1.0 } else { 0.0 };
+            let v = if c.bg_score >= params.color_partition.bg_score_threshold {
+                1.0
+            } else {
+                0.0
+            };
             for &idx in &c.indices { bg_candidate_full[idx] = v; }
         }
         save_gray_png(&bg_candidate_full, w, h, &out_dir.join("bg_candidate.png"))?;
