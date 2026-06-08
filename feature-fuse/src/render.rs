@@ -73,6 +73,8 @@ pub fn make_contact_sheet_full(
     original: &[[f64; 3]],
     features: &[(&str, &[f64])],
     fused: &[(&str, &[f64])],
+    extra_rgb: &[(&str, &[[f64; 3]])],
+    impression_swatch: Option<[f64; 3]>,
     w: u32,
     h: u32,
     layout: &ContactSheetParams,
@@ -113,6 +115,11 @@ pub fn make_contact_sheet_full(
             thumbs.push(make_thumb_gray_f32(f, w, h, cell_w, cell_h));
             labels.push(fuse_display_name(name));
         }
+        // 附加 RGB 复合图（如 Orig×Hyb）放在 FuseHybrid 右侧
+        for &(name, comp) in extra_rgb {
+            thumbs.push(make_thumb_rgb(comp, w, h, cell_w, cell_h));
+            labels.push(fuse_display_name(name));
+        }
         // 行尾补齐到 cols 列
         pad_to_align(&mut thumbs, &mut labels, cols, &empty_thumb);
     }
@@ -125,6 +132,11 @@ pub fn make_contact_sheet_full(
         for &(name, f) in fused.iter().skip(3).take(3) {
             thumbs.push(make_thumb_gray_f32(f, w, h, cell_w, cell_h));
             labels.push(fuse_display_name(name));
+        }
+        // 印象色色块（Orig×Hyb 正下方）
+        if let Some(color) = impression_swatch {
+            thumbs.push(make_swatch_thumb(color, cell_w, cell_h));
+            labels.push("Imp Color".to_string());
         }
         // 行尾补齐到 cols 列
         pad_to_align(&mut thumbs, &mut labels, cols, &empty_thumb);
@@ -226,9 +238,11 @@ fn fuse_display_name(name: &str) -> String {
         "fused_add" => "Fuse Add",
         "fused_softmul" => "Fuse Mult",
         "fused_hybrid" => "Fuse Hybrid",
+        "fused_original_hybrid" => "Orig×Hyb",
         "fused_add_filtered" => "Filt Add",
         "fused_softmul_filtered" => "Filt Mult",
         "fused_hybrid_filtered" => "Filt Hybrid",
+        "Imp Color" => "Imp Color",
         other => other,
     }.to_string()
 }
@@ -262,4 +276,12 @@ fn make_thumb_rgb(data: &[[f64; 3]], src_w: u32, src_h: u32, dst_w: u32, dst_h: 
         Rgb([r, g, b])
     });
     image::imageops::resize(&orig, dst_w, dst_h, image::imageops::FilterType::Lanczos3)
+}
+
+/// 渲染纯色色块缩略图（用于显示印象色）
+fn make_swatch_thumb(color: [f64; 3], w: u32, h: u32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+    let r = (color[0].clamp(0.0, 1.0) * 255.0) as u8;
+    let g = (color[1].clamp(0.0, 1.0) * 255.0) as u8;
+    let b = (color[2].clamp(0.0, 1.0) * 255.0) as u8;
+    ImageBuffer::from_fn(w, h, |_, _| Rgb([r, g, b]))
 }

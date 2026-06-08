@@ -22,6 +22,8 @@ pub struct Params {
     #[serde(default)]
     pub dct: DctParams,
     pub background: BackgroundParams,
+    #[serde(default)]
+    pub impression: ImpressionParams,
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,6 +141,25 @@ pub struct FilterParams {
     pub threshold: Option<f64>,
     pub normalize_before: Option<bool>,
     pub quantile: Option<f64>,
+}
+
+// =============================================================================
+// 印象色 K-Means 聚类参数
+// =============================================================================
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct ImpressionParams {
+    /// 聚类数 (k)
+    pub k: usize,
+    /// 最大迭代次数
+    pub max_iter: usize,
+}
+
+impl Default for ImpressionParams {
+    fn default() -> Self {
+        Self { k: 4, max_iter: 10 }
+    }
 }
 
 // =============================================================================

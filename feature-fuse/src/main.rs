@@ -17,7 +17,7 @@ use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
 use crate::params::{Params, load_params, validate_filter};
-use crate::fusion::{percentile_normalize, hybrid_fusion, apply_filter, weights_to_array};
+use crate::fusion::{percentile_normalize, hybrid_fusion, apply_filter, weights_to_array, composite_with_hybrid, kmeans_impression_color};
 use crate::image::load_image;
 use crate::dct::compute_dct_complexity;
 use crate::gradient::compute_lab_gradient;
@@ -296,6 +296,22 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
         save_gray_png(&fused_hyb_filt, w, h, &out_dir.join("fused_hybrid_filtered.png"))?;
     }
 
+    // ── Original × FiltHybrid 复合图 ──
+    let composite_rgb = composite_with_hybrid(&data.rgb, &fused_hyb_filt);
+    save_rgb_png(&composite_rgb, w, h, &out_dir.join("fused_original_hybrid.png"))?;
+
+    // ── 印象色：k-means++ 聚类，取最大簇 ──
+    let k = params.impression.k;
+    let max_iter = params.impression.max_iter;
+    let impression_color = kmeans_impression_color(&data.rgb, &fused_hyb_filt, k, max_iter);
+    let ic_hex = format!(
+        "#{:02x}{:02x}{:02x}",
+        (impression_color[0].clamp(0.0, 1.0) * 255.0) as u8,
+        (impression_color[1].clamp(0.0, 1.0) * 255.0) as u8,
+        (impression_color[2].clamp(0.0, 1.0) * 255.0) as u8,
+    );
+    println!("    impression color: {ic_hex} (k-means cluster, k={k}, iter={max_iter})");
+
     // ── Contact Sheet ──
     let feat_slices: Vec<(&str, &[f64])> = feature_names.iter().zip(features.iter()).map(|(&n, &f)| (n, f)).collect();
     let fused_slices: [(&str, &[f64]); 6] = [
@@ -313,6 +329,8 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
         &data.rgb,
         &feat_slices,
         &fused_slices,
+        &[("fused_original_hybrid", composite_rgb.as_slice())],
+        Some(impression_color),
         w,
         h,
         &params.contact_sheet,
