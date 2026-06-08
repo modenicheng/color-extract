@@ -1,12 +1,13 @@
 # 🎨 Color Extract — 图片主色/调色盘提取工具
 
-基于 Rust 的高性能图片颜色提取与可视化 demo，包含 **3 个独立 crate**：
+基于 Rust 的高性能图片颜色提取与可视化 demo，包含 **4 个独立 crate**：
 
 | Crate | 用途 |
 |-------|------|
 | **`dct-extract`** | DCT 增强颜色提取 —— 结合 DCT 纹理复杂度和空间信息的高级评分系统 |
 | **`lab-gradient`** | LAB 空间 Sobel 梯度可视化 —— 将三通道梯度映射到 RGB 单图 |
 | **`dct-viz`** | DCT 纹理复杂度可视化 —— 8×8 块 DCT 高频能量占比热力图 + 原图叠加 |
+| **`spectral-residual`** | 频谱残差显著性检测 —— 2D FFT 频域分析 + 热力图/叠加图 |
 | **`color-extract` (根)** | 经典调色盘提取 —— 4 种算法 × 5 个色彩空间并行对比 |
 
 ---
@@ -38,6 +39,39 @@ cargo run --release -p dct-viz
 - 直观查看图片的**纹理分布**：平滑区域（低复杂度）vs 细节/边缘区域（高复杂度）
 - 辅助理解 DCT 复杂度在颜色提取中的作用——背景往往是平滑区（c 低），主体纹理区（c 高）
 - 与 `lab-gradient` 的输出对比：DCT 反映的是**频域**纹理，Sobel 反映的是**空域**梯度
+
+---
+
+# `spectral-residual` — 频谱残差显著性检测
+
+## 功能
+
+- 加载 `imgs/` 下的图片，**Lanczos3 缩放至 ≤1024×1024**（保持比例）
+- 转换到 **CIELAB** 色彩空间，提取 L\*、a\*、b\* 三通道
+- **对每个通道独立做 2D FFT**（行‑列分离，`rustfft`），计算频谱残差显著性
+- **L₂ 范数融合** `S = √(S_L² + S_a² + S_b²)`，再归一化到 [0,1]
+- 每张图输出 **2 种可视化**：
+  | 文件 | 说明 |
+  |------|------|
+  | `{name}_sr_heat.png` | 灰度显著图：白=显著，黑=不显著 |
+  | `{name}_sr_overlay.png` | 原图 L\* 灰度叠加，显著区域红色高亮 |
+
+## 运行
+
+```bash
+cargo run --release -p spectral-residual
+```
+
+输出在 `output/spectral_residual/`。
+
+## 原理
+
+频谱残差（Spectral Residual）由 Hou & Zhang (2007) 提出，基于频域信息冗余抑制的思想：
+- 自然图像的 log 幅度谱在频域近似平滑 → **平均幅度谱** 表示频域冗余
+- 减去均值后的残差就是图片中 **「出乎意料」的频率成分**
+- 结合原始相位 IFFT 后，对应空域中的 **显著性区域**
+- 本实现使用 **CIELAB 三通道分别计算后 L₂ 融合**，对动漫/插画图的色彩和亮度显著性响应更均衡
+- 与 DCT 复杂度不同：DCT 衡量**局部纹理丰富度**，频谱残差检测**全局视觉突出**
 
 ---
 
@@ -180,6 +214,10 @@ color-extract/
 │   ├── Cargo.toml
 │   └── src/
 │       └── main.rs                # 加载→缩放→DCT→热力图+叠加图输出
+├── spectral-residual/            # 频谱残差显著性检测
+│   ├── Cargo.toml
+│   └── src/
+│       └── main.rs                # 加载→缩放→FFT→频谱残差→IFFT→热力图+叠加图
 ├── lab-gradient/                  # LAB Sobel 梯度可视化
 │   ├── Cargo.toml
 │   └── src/
@@ -201,7 +239,8 @@ color-extract/
 │   ├── results.html               # 经典调色盘报告
 │   ├── results-dct.html           # DCT 增强报告
 │   ├── lab_gradient/              # LAB 梯度可视化
-│   └── dct_viz/                   # DCT 复杂度可视化
+│   ├── dct_viz/                   # DCT 复杂度可视化
+│   └── spectral_residual/         # 频谱残差显著性图
 └── README.md
 ```
 
@@ -227,6 +266,7 @@ color-extract/
 
 | Crate | 用途 |
 |-------|------|
+| `rustfft` 6 | 2D FFT 频谱残差计算 |
 | `image` 0.25 | 图片加载/缩放 |
 | `palette` 0.7 | CIELAB、Oklab、HSL、CAM16 等色彩空间 |
 | `linfa-clustering` 0.8 | KMeans++ / Mini-Batch KMeans |
@@ -261,6 +301,10 @@ cargo build --release
 - KMeans/Mini-Batch：像素数最多的聚类的质心
 - Median Cut：最大 bucket 的均值
 - Octree：像素数最多的叶子节点的均值
+
+### 频谱残差显著性
+
+频谱残差法（Spectral Residual, Hou & Zhang 2007）通过 2D FFT 将图片变换到频域，提取 log 幅度谱并减去 3×3 均值滤波后的平均幅度谱，残差部分代表频域中的非冗余信息。结合原始相位经 IFFT 重建后得到空域显著性图。与 DCT 复杂度不同的是：DCT 度量局部 8×8 块的纹理丰富度，频谱残差检测全局视觉突出区域。
 
 ### DCT 复杂度
 

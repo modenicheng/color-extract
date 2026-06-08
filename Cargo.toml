@@ -1,5 +1,5 @@
 [workspace]
-members = ["dct-extract", "lab-gradient", "dct-viz", "spectral-residual"]
+members = ["dct-extract", "lab-gradient", "dct-viz", "spectral-residual", "residual-viz"]
 resolver = "2"
 
 [package]

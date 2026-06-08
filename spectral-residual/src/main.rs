@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
-use image::{GenericImageView, ImageBuffer, ImageReader, Rgb};
+use image::{GenericImageView, ImageBuffer, ImageReader, Luma, Rgb};
+use palette::{IntoColor, Lab, Srgb};
 use rustfft::{FftPlanner, num_complex::Complex};
-use std::f64::consts::PI;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -10,7 +10,7 @@ use std::sync::Arc;
 // ---------------------------------------------------------------------------
 
 fn fft2d_real(data: &mut [Complex<f64>], w: usize, h: usize, forward: bool) {
-    let planner = FftPlanner::new();
+    let mut planner = FftPlanner::new();
     // rows
     let fft_row: Arc<dyn rustfft::Fft<f64>> = if forward {
         planner.plan_fft_forward(w)
@@ -157,28 +157,6 @@ fn spectral_residual(gray: &[f64], w: usize, h: usize) -> Vec<f64> {
 }
 
 // ---------------------------------------------------------------------------
-// Colormap (same heatmap as dct-viz for consistency)
-// ---------------------------------------------------------------------------
-
-fn heatmap(v: f64) -> Rgb<u8> {
-    let v = v.clamp(0.0, 1.0);
-    let (r, g, b) = if v < 0.25 {
-        let t = v / 0.25;
-        (0.0, t * 4.0, 1.0)
-    } else if v < 0.5 {
-        let t = (v - 0.25) / 0.25;
-        (0.0, 1.0, 1.0 - t * 4.0)
-    } else if v < 0.75 {
-        let t = (v - 0.50) / 0.25;
-        (t * 4.0, 1.0, 0.0)
-    } else {
-        let t = (v - 0.75) / 0.25;
-        (1.0, 1.0 - t * 4.0, 0.0)
-    };
-    Rgb([(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8])
-}
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -188,11 +166,7 @@ fn fit_dim(w: u32, h: u32, max_dim: u32) -> (u32, u32) {
     ((w as f64 * s) as u32, (h as f64 * s) as u32).max((1, 1))
 }
 
-fn to_gray(pixels: &[[f64; 3]]) -> Vec<f64> {
-    pixels.iter().map(|&[r, g, b]| 0.299 * r + 0.587 * g + 0.114 * b).collect()
-}
-
-fn load_resize_gray(path: &Path) -> Result<(String, u32, u32, Vec<f64>)> {
+fn load_resize_lab(path: &Path) -> Result<(String, u32, u32, Vec<f64>, Vec<f64>, Vec<f64>)> {
     let img = ImageReader::open(path)
         .with_context(|| format!("open {}", path.display()))?
         .decode()
@@ -208,11 +182,21 @@ fn load_resize_gray(path: &Path) -> Result<(String, u32, u32, Vec<f64>)> {
 
     let rgb = resized.to_rgb8();
     let (fw, fh) = rgb.dimensions();
-    let pixels: Vec<[f64; 3]> = rgb.pixels().map(|p| [p[0] as f64 / 255.0, p[1] as f64 / 255.0, p[2] as f64 / 255.0]).collect();
-    let gray = to_gray(&pixels);
+    let n = (fw * fh) as usize;
+    let mut l = Vec::with_capacity(n);
+    let mut a = Vec::with_capacity(n);
+    let mut b = Vec::with_capacity(n);
+
+    for p in rgb.pixels() {
+        let srgb = Srgb::new(p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0);
+        let lab: Lab = srgb.into_color();
+        l.push(lab.l as f64);
+        a.push(lab.a as f64);
+        b.push(lab.b as f64);
+    }
 
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("img").to_string();
-    Ok((stem, fw, fh, gray))
+    Ok((stem, fw, fh, l, a, b))
 }
 
 // ---------------------------------------------------------------------------
@@ -235,23 +219,40 @@ fn main() -> Result<()> {
         let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
         if ext != "jpg" && ext != "jpeg" && ext != "png" { continue; }
 
-        let (stem, w, h, gray) = load_resize_gray(&path)?;
+        let (stem, w, h, l_ch, a_ch, b_ch) = load_resize_lab(&path)?;
         println!("{} {}×{}", stem, w, h);
 
-        let saliency = spectral_residual(&gray, w as usize, h as usize);
+        // 对 LAB 三通道分别计算频谱残差显著性
+        let sal_l = spectral_residual(&l_ch, w as usize, h as usize);
+        let sal_a = spectral_residual(&a_ch, w as usize, h as usize);
+        let sal_b = spectral_residual(&b_ch, w as usize, h as usize);
 
-        // --- 热力图 (同 dct-viz 风格) ---
-        let img_heat: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(w, h, |x, y| {
+        // L₂ 范数融合: S = √(S_L² + S_a² + S_b²)
+        let n = (w * h) as usize;
+        let mut saliency = vec![0.0; n];
+        for i in 0..n {
+            saliency[i] = (sal_l[i] * sal_l[i] + sal_a[i] * sal_a[i] + sal_b[i] * sal_b[i]).sqrt();
+        }
+
+        // 融合后重新归一化到 [0, 1]
+        let smin = saliency.iter().cloned().fold(f64::MAX, f64::min);
+        let smax = saliency.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let srange = (smax - smin).max(1e-12);
+        for v in &mut saliency { *v = (*v - smin) / srange; }
+
+        // --- 灰度显著图: 白=显著, 黑=不显著 ---
+        let img_heat: ImageBuffer<Luma<u8>, Vec<u8>> = ImageBuffer::from_fn(w, h, |x, y| {
             let i = (y * w + x) as usize;
-            heatmap(saliency[i])
+            let v = (saliency[i] * 255.0) as u8;
+            Luma([v])
         });
         img_heat.save(out_dir.join(format!("{}_sr_heat.png", stem)))?;
 
-        // --- 原图灰度叠加: 显著区域红色高亮 ---
+        // --- 原图叠加: 显著区域红色高亮 (使用 L*/100 作为灰度基色, 更自然) ---
         let img_overlay: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(w, h, |x, y| {
             let i = (y * w + x) as usize;
             let c = saliency[i];
-            let base = gray[i] * 255.0;
+            let base = (l_ch[i] / 100.0).clamp(0.0, 1.0) * 255.0;
             let r = (base * (1.0 - c) + 255.0 * c) as u8;
             let g = (base * (1.0 - c) + 40.0 * c) as u8;
             let b = (base * (1.0 - c) + 40.0 * c) as u8;
