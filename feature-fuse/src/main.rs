@@ -173,16 +173,16 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
     save_gray_png(&sr_norm, w, h, &out_dir.join("spectral_residual.png"))?;
     let t_sr = t0.elapsed();
 
-    // ── (4) Global light residual ──
+    // ── (4) Global light residual (稳健亮度中心) ──
     let t0 = std::time::Instant::now();
-    let gl_l_raw = compute_global_light_residual(&data.hsl_l, &params.global_residual.baseline);
+    let gl_l_raw = compute_global_light_residual(&data.hsl_l, &params.global_residual.light);
     let gl_l_norm = percentile_normalize(&gl_l_raw, p_low, p_high);
     save_gray_png(&gl_l_norm, w, h, &out_dir.join("global_light_residual.png"))?;
     let t_gl = t0.elapsed();
 
-    // ── (5) Global sat residual ──
+    // ── (5) Global sat residual (稳健亮度中心) ──
     let t0 = std::time::Instant::now();
-    let gl_s_raw = compute_global_sat_residual(&data.hsl_s, &params.global_residual.baseline);
+    let gl_s_raw = compute_global_sat_residual(&data.hsl_s, &params.global_residual.sat);
     let gl_s_norm = percentile_normalize(&gl_s_raw, p_low, p_high);
     save_gray_png(&gl_s_norm, w, h, &out_dir.join("global_sat_residual.png"))?;
     let t_gs = t0.elapsed();

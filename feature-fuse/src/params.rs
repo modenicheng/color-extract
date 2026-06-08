@@ -45,8 +45,37 @@ pub struct FusionParams {
 
 #[derive(Debug, Deserialize)]
 pub struct GlobalResidualParams {
-    pub baseline: String,
+    pub light: RobustCenterParams,
+    pub sat: RobustCenterParams,
 }
+
+/// 稳健亮度/饱和度中心估计参数
+#[derive(Debug, Deserialize)]
+pub struct RobustCenterParams {
+    /// 感知压缩方式: "gamma" 或 "log"
+    pub compression: String,
+    /// 低端 trim 百分位 (如 2.0 表示 p2)
+    pub trim_low: f64,
+    /// 高端 trim 百分位 (如 98.0 表示 p98)
+    pub trim_high: f64,
+    /// trimmed_mean 混合系数 (默认 0.65)
+    #[serde(default = "default_trimmed_mean_weight")]
+    pub trimmed_mean_weight: f64,
+    /// median 混合系数 (默认 0.35)
+    #[serde(default = "default_median_weight")]
+    pub median_weight: f64,
+    /// gamma 压缩指数 (默认 0.5)
+    #[serde(default = "default_gamma_power")]
+    pub gamma_power: f64,
+    /// log 底数 (默认 e)
+    #[serde(default = "default_log_base")]
+    pub log_base: f64,
+}
+
+fn default_trimmed_mean_weight() -> f64 { 0.65 }
+fn default_median_weight() -> f64 { 0.35 }
+fn default_gamma_power() -> f64 { 0.5 }
+fn default_log_base() -> f64 { std::f64::consts::E }
 
 #[derive(Debug, Deserialize)]
 pub struct ContactSheetParams {

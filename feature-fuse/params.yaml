@@ -23,7 +23,7 @@ max_dim: 720
 # sigma 越大 → 模糊越强 → 残差捕获更大尺度的局部变化（粗纹理/色块）。
 # sigma 越小 → 模糊越弱 → 残差只捕获细微边缘（细纹理/噪点）。
 # 建议范围: 5~80，默认 35.0 适合中等尺度的局部细节。
-gauss_sigma: 125.0
+gauss_sigma: 300.0
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 3. Percentile 归一化（所有特征图共用）
@@ -42,20 +42,55 @@ percentile:
 # 建议范围: low 0~5, high 95~100，默认 (1, 99) 对大多数图效果稳健。
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 4. 全局残差基准值选择
+# 4. 全局残差基准值选择（稳健中心估计）
 # ═════════════════════════════════════════════════════════════════════════════
 #
-# global_light / global_sat 残差计算中的"基准值"选择：
-#   "mean"   — 均值（当前默认），|像素值 - 均值| 作为残差
-#   "median" — 中位数，|像素值 - 中位数| 作为残差（对离群值更鲁棒）
+# light / sat 各有一套独立的稳健中心参数，结构一致。
 #
-# 调参说明:
-#   mean:   受极端值影响较大，适合图像直方图接近对称分布的场景。
-#   median: 对 extreme 离群值不敏感，适合有大面积纯色块或极端亮度/饱和度突变的图。
-#   两者差异通常在 0.01~0.03（归一化后），在融合结果中肉眼可见。
+# 流程: 1. 感知压缩 (gamma 或 log)
+#       2. 压缩域 clip 到 [p{trim_low}, p{trim_high}]
+#       3. trimmed_mean
+#       4. 混合: trimmed_mean_weight × trimmed_mean + median_weight × median
+#       5. 从压缩域还原到 [0, 1]
+#       6. 残差 = |像素值 - center|
+#
+# 必要字段:
+#   compression       "gamma" — pow(gamma_power) | "log" — log_base(1+eps) 归一化
+#   trim_low / high   压缩域截断百分位，剔除离群值
+#
+# 可选字段（不填则使用下方标注的默认值）:
+#   trimmed_mean_weight  混合系数，默认 0.65
+#   median_weight        混合系数，默认 0.35
+#   gamma_power          gamma 压缩指数，默认 0.5
+#   log_base             log 底数，默认 e
+#
+# 正确配置示例（当前 light 未填，全部使用默认值）:
+#   light:
+#     compression: gamma
+#     trim_low: 2.0
+#     trim_high: 98.0
+#     trimmed_mean_weight: 0.7
+#     median_weight: 0.3
+#     gamma_power: 0.4
+#     # log_base: 10.0       # 仅 compression=log 时有效
 
 global_residual:
-  baseline: mean
+  light:
+    compression: gamma
+    trim_low: 0.0
+    trim_high: 100.0
+    trimmed_mean_weight: 0.7
+    median_weight: 0.3
+    gamma_power: 0.05     # 仅 compression=gamma 时有效
+    # log_base: 2.718
+  sat:
+    compression: gamma
+    trim_low: 0.0
+    trim_high: 100.0
+    trimmed_mean_weight: 0.65
+    median_weight: 0.35
+    gamma_power: 1 # 禁用gamma缩放
+    # log_base: 2.718       # 仅 compression=log 时有效
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 5. 特征权重
@@ -91,7 +126,7 @@ weights_add:
   dct:          0.15
   lab_grad:     0.25
   spectral:     0.15
-  global_light: 0.20
+  global_light: 0.10
   global_sat:   0.30
   local_light:  0.18
   local_sat:    0.15
@@ -104,8 +139,8 @@ weights_mul:
   dct:          0.05
   lab_grad:     0.10
   spectral:     0.15
-  global_light: 0.60
-  global_sat:   0.70
+  global_light: 0.20
+  global_sat:   0.50
   local_light:  0.45
   local_sat:    0.45
 
@@ -124,21 +159,21 @@ fusion:
   #   偏加法 (α≈1) → 结果更"慷慨"，任一特征高亮就能体现在结果中。
   #   偏乘法 (α≈0) → 结果更"严格"，需要多特征同时高亮才响应。
   # 建议范围: 0.0~1.0，默认 0.10 偏向软乘法（更精细）。
-  alpha:   0.15
+  alpha:   0.20
 
   # 最终对比度调整指数（对 [0,1] 内的每个像素做 powf(gamma)）。
   #   gamma < 1 → 整体提亮（暗区提升明显），对比度降低。
   #   gamma = 1 → 无变化（线性映射）。
   #   gamma > 1 → 整体压暗，亮区更亮、暗区更暗，对比度增强。
   # 建议范围: 0.3~2.0，默认 1.0 不做额外调整。
-  gamma:   1.4
+  gamma:   0.8
 
   # 软乘法 baseline。防止某特征值为 0 时乘积归零。
   # 实际公式中用 (ε + (1-ε)*feat) 替代原始 feat。
   #   ε→0 → 乘法效果更强（任一特征为 0 则乘积≈0，严格 AND 行为）。
   #   ε→1 → 乘法退化 ≈ 加法（baseline 起主导，特征贡献被稀释）。
   # 建议范围: 0.01~0.50，默认 0.15 平衡了严格性和稳健性。
-  epsilon: 0.30
+  epsilon: 0.20
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 7. 最终 Fuse 图过滤（阈值法 / 分位数法，互斥）
