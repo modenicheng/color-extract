@@ -1,6 +1,6 @@
 use anyhow::Context;
-use image::{GenericImageView, ImageBuffer, ImageReader, Luma};
-use palette::{Hsl, IntoColor, Srgb};
+use image::{GenericImageView, ImageBuffer, ImageReader, Luma, Rgb};
+use palette::{Hsl, IntoColor, Lab, Srgb};
 use std::path::Path;
 use std::time::Instant;
 
@@ -116,8 +116,65 @@ fn main() -> anyhow::Result<()> {
         let light_path = format!("{out_dir}/{stem}_light.png");
         light_res.save(&light_path).context("saving lightness residual")?;
 
+        // ── Extract L, a, b channels from CIELAB ──
+        let mut l_img = ImageBuffer::<Luma<u8>, Vec<u8>>::new(fw, fh);
+        let mut a_img = ImageBuffer::<Luma<u8>, Vec<u8>>::new(fw, fh);
+        let mut b_img = ImageBuffer::<Luma<u8>, Vec<u8>>::new(fw, fh);
+
+        for (x, y, pixel) in rgb.enumerate_pixels() {
+            let r = pixel[0] as f32 / 255.0;
+            let g = pixel[1] as f32 / 255.0;
+            let bl = pixel[2] as f32 / 255.0;
+            let srgb = Srgb::new(r, g, bl);
+            let lab: Lab = srgb.into_color();
+            // L*: 0..100, a*: −128..128, b*: −128..128
+            // Normalise each to 0..255 for grayscale image storage
+            let l_norm = (lab.l / 100.0).clamp(0.0, 1.0);
+            let a_norm = ((lab.a + 128.0) / 256.0).clamp(0.0, 1.0);
+            let b_norm = ((lab.b + 128.0) / 256.0).clamp(0.0, 1.0);
+            l_img.put_pixel(x, y, Luma([(l_norm * 255.0) as u8]));
+            a_img.put_pixel(x, y, Luma([(a_norm * 255.0) as u8]));
+            b_img.put_pixel(x, y, Luma([(b_norm * 255.0) as u8]));
+        }
+
+        // ── Gaussian blur each LAB channel ──
+        let l_blurred = image::imageops::blur(&l_img, sigma);
+        let a_blurred = image::imageops::blur(&a_img, sigma);
+        let b_blurred = image::imageops::blur(&b_img, sigma);
+
+        // ── Compute |original - blurred| residual for each LAB channel ──
+        // Then map L‑residual → R, a‑residual → G, b‑residual → B
+        let mut lab_res = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(fw, fh);
+
+        for (x, y, _) in rgb.enumerate_pixels() {
+            let lo = l_img.get_pixel(x, y)[0];
+            let lb = l_blurred.get_pixel(x, y)[0];
+            let lr = (lo as i16 - lb as i16).unsigned_abs() as u8;
+
+            let ao = a_img.get_pixel(x, y)[0];
+            let ab = a_blurred.get_pixel(x, y)[0];
+            let ar = (ao as i16 - ab as i16).unsigned_abs() as u8;
+
+            let bo = b_img.get_pixel(x, y)[0];
+            let bb = b_blurred.get_pixel(x, y)[0];
+            let br = (bo as i16 - bb as i16).unsigned_abs() as u8;
+
+            lab_res.put_pixel(x, y, Rgb([lr, ar, br]));
+        }
+
+        // ── Save ──
+        let sat_path = format!("{out_dir}/{stem}_sat.png");
+        sat_res.save(&sat_path).context("saving saturation residual")?;
+
+        let light_path = format!("{out_dir}/{stem}_light.png");
+        light_res.save(&light_path).context("saving lightness residual")?;
+
+        let lab_path = format!("{out_dir}/{stem}_lab.png");
+        lab_res.save(&lab_path).context("saving LAB residual")?;
+
         println!("    → sat residual: {sat_path}");
         println!("    → light residual: {light_path}");
+        println!("    → LAB residual:  {lab_path}  (R=Lₓ, G=aₓ, B=bₓ)");
         println!("    → done in {:?}", start.elapsed());
     }
 
