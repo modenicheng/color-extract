@@ -8,7 +8,7 @@ fn main() -> anyhow::Result<()> {
     let sigma: f32 = std::env::args()
         .nth(1)
         .and_then(|s| s.parse().ok())
-        .unwrap_or(5.0);
+        .unwrap_or(25.0);
 
     let max_dim: u32 = std::env::args()
         .nth(2)

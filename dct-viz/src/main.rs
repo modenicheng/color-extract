@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use image::{GenericImageView, ImageBuffer, ImageReader, Rgb};
+use image::{GenericImageView, GrayImage, ImageBuffer, ImageReader, Rgb};
 use rayon::prelude::*;
 use rayon::slice::ParallelSliceMut;
 use std::path::Path;
@@ -169,6 +169,14 @@ fn main() -> Result<()> {
             heatmap(map[i])
         });
         img_heat.save(out_dir.join(format!("{}_dct_heat.png", stem)))?;
+
+        // --- 纯灰度图: 复杂度值直接映射到亮度, 无分段/overlay ---
+        let img_gray: GrayImage = ImageBuffer::from_fn(w, h, |x, y| {
+            let i = (y * w + x) as usize;
+            let v = (map[i] * 255.0).clamp(0.0, 255.0) as u8;
+            image::Luma([v])
+        });
+        img_gray.save(out_dir.join(format!("{}_dct_gray.png", stem)))?;
 
         // --- 灰度加权图: 把复杂度叠加到原图亮度上 ---
         let img_light: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(w, h, |x, y| {
