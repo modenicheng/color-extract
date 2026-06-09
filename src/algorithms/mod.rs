@@ -17,7 +17,12 @@ pub enum Algorithm {
 
 impl Algorithm {
     pub fn all() -> [Self; 4] {
-        [Self::KMeansPlusPlus, Self::MiniBatchKMeans, Self::MedianCut, Self::Octree]
+        [
+            Self::KMeansPlusPlus,
+            Self::MiniBatchKMeans,
+            Self::MedianCut,
+            Self::Octree,
+        ]
     }
 
     pub fn name(&self) -> &'static str {
@@ -63,7 +68,11 @@ fn make_entry(rgb_norm: [f64; 3], proportion: f64) -> PaletteEntry {
 
 /// Sort palette entries from dark to light (by CIELAB L* ascending).
 fn sort_by_lightness(palette: &mut [PaletteEntry]) {
-    palette.sort_by(|a, b| a.lab_l.partial_cmp(&b.lab_l).unwrap_or(std::cmp::Ordering::Equal));
+    palette.sort_by(|a, b| {
+        a.lab_l
+            .partial_cmp(&b.lab_l)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 }
 
 /// Run one (algorithm, colorspace) combination on the given normalized RGB pixels.

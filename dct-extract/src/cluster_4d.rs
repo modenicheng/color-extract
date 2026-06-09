@@ -1,11 +1,11 @@
 use anyhow::Result;
-use linfa::prelude::*;
 use linfa::DatasetBase;
+use linfa::prelude::*;
 use linfa_clustering::KMeans;
 use ndarray::Array2;
 use palette::{FromColor, Lab, Srgb};
-use rand::seq::SliceRandom;
 use rand::SeedableRng;
+use rand::seq::SliceRandom;
 use rand_xoshiro::Xoshiro256Plus;
 use rand_xoshiro::Xoshiro256PlusPlus;
 use std::time::Duration;
@@ -20,12 +20,12 @@ pub struct Cluster4D {
     #[allow(dead_code)]
     pub rgb: [u8; 3],
     pub hex: String,
-    pub proportion: f64,       // fraction of pixels belonging to this cluster
-    pub avg_complexity: f64,  // mean c (4th dimension) of the cluster
-    pub dominant_score: f64,  // softmax(p) × softmax(c) — both normalized across clusters
+    pub proportion: f64,     // fraction of pixels belonging to this cluster
+    pub avg_complexity: f64, // mean c (4th dimension) of the cluster
+    pub dominant_score: f64, // softmax(p) × softmax(c) — both normalized across clusters
     pub lab_l: f64,
-    pub avg_x: f64,           // mean normalized x (0..1) — 0.0 when not available
-    pub avg_y: f64,           // mean normalized y (0..1) — 0.0 when not available
+    pub avg_x: f64, // mean normalized x (0..1) — 0.0 when not available
+    pub avg_y: f64, // mean normalized y (0..1) — 0.0 when not available
 }
 
 /// Result of a 4‑D clustering run.
@@ -76,7 +76,11 @@ fn make_cluster(
 
 /// Sort clusters by L* ascending (dark → light).
 fn sort_by_lightness(clusters: &mut [Cluster4D]) {
-    clusters.sort_by(|a, b| a.lab_l.partial_cmp(&b.lab_l).unwrap_or(std::cmp::Ordering::Equal));
+    clusters.sort_by(|a, b| {
+        a.lab_l
+            .partial_cmp(&b.lab_l)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 }
 
 /// Apply softmax to both proportion and avg_complexity across clusters,
@@ -89,10 +93,7 @@ fn softmax_dominant_scores(clusters: &mut [Cluster4D]) {
         .iter()
         .map(|c| c.proportion)
         .fold(f64::NEG_INFINITY, f64::max);
-    let denom_p: f64 = clusters
-        .iter()
-        .map(|c| (c.proportion - max_p).exp())
-        .sum();
+    let denom_p: f64 = clusters.iter().map(|c| (c.proportion - max_p).exp()).sum();
     let max_c = clusters
         .iter()
         .map(|c| c.avg_complexity)
@@ -121,7 +122,11 @@ fn run_kmeans_3d(
     let k = k.min(n);
 
     if k == 0 {
-        return Ok((vec![], make_cluster([0.0; 3], 0.0, 0.0, 0.0, 0.0, 0.0), Duration::ZERO));
+        return Ok((
+            vec![],
+            make_cluster([0.0; 3], 0.0, 0.0, 0.0, 0.0, 0.0),
+            Duration::ZERO,
+        ));
     }
 
     let start = std::time::Instant::now();
@@ -140,13 +145,19 @@ fn run_kmeans_3d(
     let assignments = model.predict(&dataset);
     let total = n as f64;
     let mut counts = vec![0usize; k];
-    for &cl in assignments.iter() { counts[cl] += 1; }
+    for &cl in assignments.iter() {
+        counts[cl] += 1;
+    }
 
     let centroid_slice = model.centroids().as_slice().unwrap();
     let mut clusters: Vec<Cluster4D> = (0..k)
         .map(|i| {
             let b = i * 3;
-            let lab = [centroid_slice[b], centroid_slice[b + 1], centroid_slice[b + 2]];
+            let lab = [
+                centroid_slice[b],
+                centroid_slice[b + 1],
+                centroid_slice[b + 2],
+            ];
             let rgb = lab_to_rgb_norm(lab);
             let proportion = counts[i] as f64 / total;
             make_cluster(rgb, proportion, 0.0, lab[0].clamp(0.0, 100.0), 0.0, 0.0)
@@ -172,7 +183,11 @@ fn run_kmeans_3d(
 /// KMeans++ on plain CIELAB 3D (no complexity) — baseline.
 pub fn kmeans_baseline(data: &[[f64; 3]], k: usize, rng_seed: u64) -> Result<ClusterResult4D> {
     let (clusters, dominant, duration) = run_kmeans_3d(data, k, rng_seed)?;
-    Ok(ClusterResult4D { clusters, dominant, duration })
+    Ok(ClusterResult4D {
+        clusters,
+        dominant,
+        duration,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -180,11 +195,7 @@ pub fn kmeans_baseline(data: &[[f64; 3]], k: usize, rng_seed: u64) -> Result<Clu
 // ---------------------------------------------------------------------------
 
 /// Run K‑Means++ on 4‑D data [L, a, b, c] (CIELAB + complexity).
-pub fn kmeans_plus_plus(
-    data: &[[f64; 4]],
-    k: usize,
-    rng_seed: u64,
-) -> Result<ClusterResult4D> {
+pub fn kmeans_plus_plus(data: &[[f64; 4]], k: usize, rng_seed: u64) -> Result<ClusterResult4D> {
     let n = data.len();
     let k = k.min(n);
 
@@ -224,10 +235,22 @@ pub fn kmeans_plus_plus(
     let mut clusters: Vec<Cluster4D> = (0..k)
         .map(|i| {
             let b = i * 4;
-            let lab = [centroid_slice[b], centroid_slice[b + 1], centroid_slice[b + 2]];
+            let lab = [
+                centroid_slice[b],
+                centroid_slice[b + 1],
+                centroid_slice[b + 2],
+            ];
             let rgb = lab_to_rgb_norm(lab);
-            let proportion = if counts[i] > 0 { counts[i] as f64 / total } else { 0.0 };
-            let avg_c = if counts[i] > 0 { sum_c[i] / counts[i] as f64 } else { 0.0 };
+            let proportion = if counts[i] > 0 {
+                counts[i] as f64 / total
+            } else {
+                0.0
+            };
+            let avg_c = if counts[i] > 0 {
+                sum_c[i] / counts[i] as f64
+            } else {
+                0.0
+            };
             make_cluster(rgb, proportion, avg_c, lab[0].clamp(0.0, 100.0), 0.0, 0.0)
         })
         .collect();
@@ -267,7 +290,11 @@ fn run_minibatch_3d(
     let k = k.min(n);
 
     if k == 0 {
-        return Ok((vec![], make_cluster([0.0; 3], 0.0, 0.0, 0.0, 0.0, 0.0), Duration::ZERO));
+        return Ok((
+            vec![],
+            make_cluster([0.0; 3], 0.0, 0.0, 0.0, 0.0, 0.0),
+            Duration::ZERO,
+        ));
     }
 
     let start = std::time::Instant::now();
@@ -297,13 +324,19 @@ fn run_minibatch_3d(
 
     let total = n as f64;
     let mut counts = vec![0usize; k];
-    for &cl in assignments.iter() { counts[cl] += 1; }
+    for &cl in assignments.iter() {
+        counts[cl] += 1;
+    }
 
     let centroid_slice = model.centroids().as_slice().unwrap();
     let mut clusters: Vec<Cluster4D> = (0..k)
         .map(|i| {
             let b = i * 3;
-            let lab = [centroid_slice[b], centroid_slice[b + 1], centroid_slice[b + 2]];
+            let lab = [
+                centroid_slice[b],
+                centroid_slice[b + 1],
+                centroid_slice[b + 2],
+            ];
             let rgb = lab_to_rgb_norm(lab);
             let proportion = counts[i] as f64 / total;
             make_cluster(rgb, proportion, 0.0, lab[0].clamp(0.0, 100.0), 0.0, 0.0)
@@ -329,7 +362,11 @@ fn run_minibatch_3d(
 /// Mini-Batch KMeans on plain CIELAB 3D (no complexity) — baseline.
 pub fn minibatch_baseline(data: &[[f64; 3]], k: usize, rng_seed: u64) -> Result<ClusterResult4D> {
     let (clusters, dominant, duration) = run_minibatch_3d(data, k, rng_seed)?;
-    Ok(ClusterResult4D { clusters, dominant, duration })
+    Ok(ClusterResult4D {
+        clusters,
+        dominant,
+        duration,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -338,11 +375,7 @@ pub fn minibatch_baseline(data: &[[f64; 3]], k: usize, rng_seed: u64) -> Result<
 
 const BATCH_SIZE: usize = 2048;
 
-pub fn mini_batch_kmeans(
-    data: &[[f64; 4]],
-    k: usize,
-    rng_seed: u64,
-) -> Result<ClusterResult4D> {
+pub fn mini_batch_kmeans(data: &[[f64; 4]], k: usize, rng_seed: u64) -> Result<ClusterResult4D> {
     let n = data.len();
     let k = k.min(n);
 
@@ -364,7 +397,10 @@ pub fn mini_batch_kmeans(
     let batch_n = BATCH_SIZE.min(n);
     let batch_data: Vec<[f64; 4]> = indices[..batch_n].iter().map(|&i| data[i]).collect();
 
-    let flat: Vec<f64> = batch_data.iter().flat_map(|c| [c[0], c[1], c[2], c[3]]).collect();
+    let flat: Vec<f64> = batch_data
+        .iter()
+        .flat_map(|c| [c[0], c[1], c[2], c[3]])
+        .collect();
     let array = Array2::from_shape_vec((batch_n, 4), flat)?;
     let dataset = DatasetBase::from(array);
 
@@ -393,10 +429,18 @@ pub fn mini_batch_kmeans(
     let mut clusters: Vec<Cluster4D> = (0..k)
         .map(|i| {
             let b = i * 4;
-            let lab = [centroid_slice[b], centroid_slice[b + 1], centroid_slice[b + 2]];
+            let lab = [
+                centroid_slice[b],
+                centroid_slice[b + 1],
+                centroid_slice[b + 2],
+            ];
             let rgb = lab_to_rgb_norm(lab);
             let proportion = counts[i] as f64 / total;
-            let avg_c = if counts[i] > 0 { sum_c[i] / counts[i] as f64 } else { 0.0 };
+            let avg_c = if counts[i] > 0 {
+                sum_c[i] / counts[i] as f64
+            } else {
+                0.0
+            };
             make_cluster(rgb, proportion, avg_c, lab[0].clamp(0.0, 100.0), 0.0, 0.0)
         })
         .collect();
@@ -428,11 +472,7 @@ pub fn mini_batch_kmeans(
 // ---------------------------------------------------------------------------
 
 /// Run K‑Means++ on 6‑D data [L, a, b, c, nx, ny] (CIELAB + complexity + pixel coordinates).
-pub fn kmeans_plus_plus_6d(
-    data: &[[f64; 6]],
-    k: usize,
-    rng_seed: u64,
-) -> Result<ClusterResult4D> {
+pub fn kmeans_plus_plus_6d(data: &[[f64; 6]], k: usize, rng_seed: u64) -> Result<ClusterResult4D> {
     let n = data.len();
     let k = k.min(n);
 
@@ -446,7 +486,10 @@ pub fn kmeans_plus_plus_6d(
 
     let start = std::time::Instant::now();
 
-    let flat: Vec<f64> = data.iter().flat_map(|c| [c[0], c[1], c[2], c[3], c[4], c[5]]).collect();
+    let flat: Vec<f64> = data
+        .iter()
+        .flat_map(|c| [c[0], c[1], c[2], c[3], c[4], c[5]])
+        .collect();
     let array = Array2::from_shape_vec((n, 6), flat)?;
     let dataset = DatasetBase::from(array);
 
@@ -475,13 +518,40 @@ pub fn kmeans_plus_plus_6d(
     let mut clusters: Vec<Cluster4D> = (0..k)
         .map(|i| {
             let b = i * 6;
-            let lab = [centroid_slice[b], centroid_slice[b + 1], centroid_slice[b + 2]];
+            let lab = [
+                centroid_slice[b],
+                centroid_slice[b + 1],
+                centroid_slice[b + 2],
+            ];
             let rgb = lab_to_rgb_norm(lab);
-            let proportion = if counts[i] > 0 { counts[i] as f64 / total } else { 0.0 };
-            let avg_c = if counts[i] > 0 { sum_c[i] / counts[i] as f64 } else { 0.0 };
-            let avg_x = if counts[i] > 0 { sum_x[i] / counts[i] as f64 } else { 0.0 };
-            let avg_y = if counts[i] > 0 { sum_y[i] / counts[i] as f64 } else { 0.0 };
-            make_cluster(rgb, proportion, avg_c, lab[0].clamp(0.0, 100.0), avg_x, avg_y)
+            let proportion = if counts[i] > 0 {
+                counts[i] as f64 / total
+            } else {
+                0.0
+            };
+            let avg_c = if counts[i] > 0 {
+                sum_c[i] / counts[i] as f64
+            } else {
+                0.0
+            };
+            let avg_x = if counts[i] > 0 {
+                sum_x[i] / counts[i] as f64
+            } else {
+                0.0
+            };
+            let avg_y = if counts[i] > 0 {
+                sum_y[i] / counts[i] as f64
+            } else {
+                0.0
+            };
+            make_cluster(
+                rgb,
+                proportion,
+                avg_c,
+                lab[0].clamp(0.0, 100.0),
+                avg_x,
+                avg_y,
+            )
         })
         .collect();
 
@@ -508,11 +578,7 @@ pub fn kmeans_plus_plus_6d(
 }
 
 /// Mini‑Batch K‑Means on 6‑D data [L, a, b, c, nx, ny] (CIELAB + complexity + coordinates).
-pub fn mini_batch_kmeans_6d(
-    data: &[[f64; 6]],
-    k: usize,
-    rng_seed: u64,
-) -> Result<ClusterResult4D> {
+pub fn mini_batch_kmeans_6d(data: &[[f64; 6]], k: usize, rng_seed: u64) -> Result<ClusterResult4D> {
     let n = data.len();
     let k = k.min(n);
 
@@ -533,7 +599,10 @@ pub fn mini_batch_kmeans_6d(
     let batch_n = BATCH_SIZE.min(n);
     let batch_data: Vec<[f64; 6]> = indices[..batch_n].iter().map(|&i| data[i]).collect();
 
-    let flat: Vec<f64> = batch_data.iter().flat_map(|c| [c[0], c[1], c[2], c[3], c[4], c[5]]).collect();
+    let flat: Vec<f64> = batch_data
+        .iter()
+        .flat_map(|c| [c[0], c[1], c[2], c[3], c[4], c[5]])
+        .collect();
     let array = Array2::from_shape_vec((batch_n, 6), flat)?;
     let dataset = DatasetBase::from(array);
 
@@ -545,7 +614,10 @@ pub fn mini_batch_kmeans_6d(
         .fit(&dataset)?;
 
     // Predict on ALL pixels
-    let full_flat: Vec<f64> = data.iter().flat_map(|c| [c[0], c[1], c[2], c[3], c[4], c[5]]).collect();
+    let full_flat: Vec<f64> = data
+        .iter()
+        .flat_map(|c| [c[0], c[1], c[2], c[3], c[4], c[5]])
+        .collect();
     let full_array = Array2::from_shape_vec((n, 6), full_flat)?;
     let full_dataset = DatasetBase::new(full_array, ());
     let assignments = model.predict(&full_dataset);
@@ -566,13 +638,36 @@ pub fn mini_batch_kmeans_6d(
     let mut clusters: Vec<Cluster4D> = (0..k)
         .map(|i| {
             let b = i * 6;
-            let lab = [centroid_slice[b], centroid_slice[b + 1], centroid_slice[b + 2]];
+            let lab = [
+                centroid_slice[b],
+                centroid_slice[b + 1],
+                centroid_slice[b + 2],
+            ];
             let rgb = lab_to_rgb_norm(lab);
             let proportion = counts[i] as f64 / total;
-            let avg_c = if counts[i] > 0 { sum_c[i] / counts[i] as f64 } else { 0.0 };
-            let avg_x = if counts[i] > 0 { sum_x[i] / counts[i] as f64 } else { 0.0 };
-            let avg_y = if counts[i] > 0 { sum_y[i] / counts[i] as f64 } else { 0.0 };
-            make_cluster(rgb, proportion, avg_c, lab[0].clamp(0.0, 100.0), avg_x, avg_y)
+            let avg_c = if counts[i] > 0 {
+                sum_c[i] / counts[i] as f64
+            } else {
+                0.0
+            };
+            let avg_x = if counts[i] > 0 {
+                sum_x[i] / counts[i] as f64
+            } else {
+                0.0
+            };
+            let avg_y = if counts[i] > 0 {
+                sum_y[i] / counts[i] as f64
+            } else {
+                0.0
+            };
+            make_cluster(
+                rgb,
+                proportion,
+                avg_c,
+                lab[0].clamp(0.0, 100.0),
+                avg_x,
+                avg_y,
+            )
         })
         .collect();
 

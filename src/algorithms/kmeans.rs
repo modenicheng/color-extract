@@ -1,9 +1,9 @@
-use super::{make_entry, sort_by_lightness, AlgorithmResult, PaletteEntry};
+use super::{AlgorithmResult, PaletteEntry, make_entry, sort_by_lightness};
 use crate::colorspace::ColorSpace;
 use crate::timing::timed;
 use anyhow::Result;
-use linfa::prelude::*;
 use linfa::DatasetBase;
+use linfa::prelude::*;
 use linfa_clustering::KMeans;
 use ndarray::{Array1, Array2};
 use rand::SeedableRng;
@@ -13,7 +13,12 @@ use rand_xoshiro::Xoshiro256Plus;
 ///
 /// Converts pixels to the target color space, clusters with KMeans++
 /// (default init), then converts centroids back to RGB for the palette.
-pub fn run(pixels: &[[f64; 3]], cs: ColorSpace, k: usize, rng_seed: u64) -> Result<AlgorithmResult> {
+pub fn run(
+    pixels: &[[f64; 3]],
+    cs: ColorSpace,
+    k: usize,
+    rng_seed: u64,
+) -> Result<AlgorithmResult> {
     let n_pixels = pixels.len();
     let k = k.min(n_pixels);
 

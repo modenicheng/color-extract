@@ -6,12 +6,12 @@ use std::io::Write;
 /// A single image's results from both algorithms, with/without complexity.
 pub struct ImageResult {
     pub img: LoadedImage,
-    pub kmeans: ClusterResult4D,      // KMeans++ (with c)
-    pub minibatch: ClusterResult4D,   // Mini-Batch (with c)
-    pub kmeans_base: ClusterResult4D, // KMeans++ (no c) — baseline
+    pub kmeans: ClusterResult4D,         // KMeans++ (with c)
+    pub minibatch: ClusterResult4D,      // Mini-Batch (with c)
+    pub kmeans_base: ClusterResult4D,    // KMeans++ (no c) — baseline
     pub minibatch_base: ClusterResult4D, // Mini-Batch (no c) — baseline
-    pub kmeans_6d: ClusterResult4D,   // KMeans++ (c + xy)
-    pub minibatch_6d: ClusterResult4D, // Mini-Batch (c + xy)
+    pub kmeans_6d: ClusterResult4D,      // KMeans++ (c + xy)
+    pub minibatch_6d: ClusterResult4D,   // Mini-Batch (c + xy)
 }
 
 /// Generate a self‑contained HTML file.
@@ -250,10 +250,23 @@ fn write_body(html: &mut String, results: &[ImageResult]) {
 
     let total_duration: std::time::Duration = results
         .iter()
-        .flat_map(|r| [r.kmeans.duration, r.minibatch.duration, r.kmeans_base.duration, r.minibatch_base.duration, r.kmeans_6d.duration, r.minibatch_6d.duration])
+        .flat_map(|r| {
+            [
+                r.kmeans.duration,
+                r.minibatch.duration,
+                r.kmeans_base.duration,
+                r.minibatch_base.duration,
+                r.kmeans_6d.duration,
+                r.minibatch_6d.duration,
+            ]
+        })
         .sum();
     let count = results.len() * 6;
-    let avg_duration = if count > 0 { total_duration / count as u32 } else { std::time::Duration::ZERO };
+    let avg_duration = if count > 0 {
+        total_duration / count as u32
+    } else {
+        std::time::Duration::ZERO
+    };
 
     html.push_str("<div class=\"summary-stats\">\n");
     html.push_str(&format!(
@@ -276,10 +289,7 @@ fn write_body(html: &mut String, results: &[ImageResult]) {
 
     for res in results {
         html.push_str("<section class=\"image-section\">\n");
-        html.push_str(&format!(
-            "<h2>{}</h2>\n",
-            html_escape(&res.img.filename)
-        ));
+        html.push_str(&format!("<h2>{}</h2>\n", html_escape(&res.img.filename)));
         html.push_str(&format!(
             "<div class=\"image-meta\">{}×{} px ({} pixels)</div>\n",
             res.img.width,
@@ -293,20 +303,50 @@ fn write_body(html: &mut String, results: &[ImageResult]) {
         ));
 
         // Baseline (no c) sections
-        write_algo_section(html, "K‑Means++ (Baseline)", "kmeans++ — 仅 CIELAB 3D，无复杂度维度", &res.kmeans_base);
-        write_algo_section(html, "Mini‑Batch K‑Means (Baseline)", "minibatch — 仅 CIELAB 3D，无复杂度维度", &res.minibatch_base);
+        write_algo_section(
+            html,
+            "K‑Means++ (Baseline)",
+            "kmeans++ — 仅 CIELAB 3D，无复杂度维度",
+            &res.kmeans_base,
+        );
+        write_algo_section(
+            html,
+            "Mini‑Batch K‑Means (Baseline)",
+            "minibatch — 仅 CIELAB 3D，无复杂度维度",
+            &res.minibatch_base,
+        );
 
         // K‑Means++ section
-        write_algo_section(html, "K‑Means++ (with c)", "kmeans++ — CIELAB 4D，含 DCT 复杂度", &res.kmeans);
+        write_algo_section(
+            html,
+            "K‑Means++ (with c)",
+            "kmeans++ — CIELAB 4D，含 DCT 复杂度",
+            &res.kmeans,
+        );
 
         // Mini‑Batch K‑Means section
-        write_algo_section(html, "Mini‑Batch K‑Means (with c)", "minibatch — CIELAB 4D，含 DCT 复杂度", &res.minibatch);
+        write_algo_section(
+            html,
+            "Mini‑Batch K‑Means (with c)",
+            "minibatch — CIELAB 4D，含 DCT 复杂度",
+            &res.minibatch,
+        );
 
         // K‑Means++ 6D section (new)
-        write_algo_section(html, "K‑Means++ (c + xy)", "kmeans++ — CIELAB 6D，含 DCT 复杂度 + 像素坐标 (x,y)", &res.kmeans_6d);
+        write_algo_section(
+            html,
+            "K‑Means++ (c + xy)",
+            "kmeans++ — CIELAB 6D，含 DCT 复杂度 + 像素坐标 (x,y)",
+            &res.kmeans_6d,
+        );
 
         // Mini‑Batch K‑Means 6D section (new)
-        write_algo_section(html, "Mini‑Batch K‑Means (c + xy)", "minibatch — CIELAB 6D，含 DCT 复杂度 + 像素坐标 (x,y)", &res.minibatch_6d);
+        write_algo_section(
+            html,
+            "Mini‑Batch K‑Means (c + xy)",
+            "minibatch — CIELAB 6D，含 DCT 复杂度 + 像素坐标 (x,y)",
+            &res.minibatch_6d,
+        );
 
         html.push_str("</section>\n");
     }
@@ -342,7 +382,10 @@ fn write_algo_section(html: &mut String, name: &str, desc: &str, result: &Cluste
         result.dominant.hex
     ));
     let coord_info = if result.dominant.avg_x > 0.0 || result.dominant.avg_y > 0.0 {
-        format!(" | xy=({:.3},{:.3})", result.dominant.avg_x, result.dominant.avg_y)
+        format!(
+            " | xy=({:.3},{:.3})",
+            result.dominant.avg_x, result.dominant.avg_y
+        )
     } else {
         String::new()
     };

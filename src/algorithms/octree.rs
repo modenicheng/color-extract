@@ -1,4 +1,4 @@
-use super::{make_entry, sort_by_lightness, AlgorithmResult, PaletteEntry};
+use super::{AlgorithmResult, PaletteEntry, make_entry, sort_by_lightness};
 use crate::colorspace::ColorSpace;
 use crate::timing::timed;
 use anyhow::Result;
@@ -209,7 +209,9 @@ impl OctreeQuantizer {
     fn reduce(&mut self, target_k: usize) {
         while self.leaf_count > target_k {
             // Find deepest level with a non-empty reducible list
-            let deepest = (0..=MAX_DEPTH).rev().find(|&d| !self.reducible[d].is_empty());
+            let deepest = (0..=MAX_DEPTH)
+                .rev()
+                .find(|&d| !self.reducible[d].is_empty());
             let level = match deepest {
                 Some(l) => l,
                 None => break, // nothing left to reduce
@@ -218,8 +220,7 @@ impl OctreeQuantizer {
             let node_idx = self.reducible[level].pop().unwrap();
 
             // Collect current leaf-child indices
-            let child_indices: Vec<usize> = self
-                .nodes[node_idx]
+            let child_indices: Vec<usize> = self.nodes[node_idx]
                 .children
                 .iter()
                 .filter_map(|&c| c)
@@ -433,10 +434,7 @@ pub fn run(pixels: &[[f64; 3]], cs: ColorSpace, k: usize) -> Result<AlgorithmRes
         };
 
         // ── Build PaletteEntry list ───────────────────────────────────
-        let total_in_leaves: f64 = leaf_colors
-            .iter()
-            .map(|(_, cnt)| *cnt as f64)
-            .sum();
+        let total_in_leaves: f64 = leaf_colors.iter().map(|(_, cnt)| *cnt as f64).sum();
         let total_in_leaves = if total_in_leaves > 0.0 {
             total_in_leaves
         } else {

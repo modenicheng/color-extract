@@ -3,7 +3,7 @@ use rayon::prelude::*;
 // ---------------------------------------------------------------------------
 // DCT constants
 // ---------------------------------------------------------------------------
-const N: usize = 8;        // DCT block size
+const N: usize = 8; // DCT block size
 const THRESHOLD: usize = 4; // u+v < THRESHOLD → low freq; ≥ → high freq
 const PI: f64 = std::f64::consts::PI;
 
@@ -21,8 +21,7 @@ fn dct_matrix() -> [[f64; N]; N] {
     for i in 0..N {
         let alpha = if i == 0 { inv_sqrt_n } else { sqrt_2_over_n };
         for j in 0..N {
-            t[i][j] =
-                alpha * ((2.0 * j as f64 + 1.0) * i as f64 * PI / (2.0 * N as f64)).cos();
+            t[i][j] = alpha * ((2.0 * j as f64 + 1.0) * i as f64 * PI / (2.0 * N as f64)).cos();
         }
     }
     t
@@ -104,7 +103,10 @@ pub fn compute_complexity_map(pixels: &[[f64; 3]], width: u32, height: u32) -> V
     let offset = (N / 2) as i32; // 4
 
     // Convert to grayscale luminance Y = 0.299·R + 0.587·G + 0.114·B
-    let gray: Vec<f64> = pixels.iter().map(|&[r, g, b]| 0.299 * r + 0.587 * g + 0.114 * b).collect();
+    let gray: Vec<f64> = pixels
+        .iter()
+        .map(|&[r, g, b]| 0.299 * r + 0.587 * g + 0.114 * b)
+        .collect();
 
     let t = dct_matrix();
 

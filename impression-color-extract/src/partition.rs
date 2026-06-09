@@ -54,22 +54,32 @@ fn median_cut_partition(
         clusters.push(Cluster {
             pixels: vec![],
             indices,
-            mean_l, mean_a, mean_b,
-            var_l, var_a, var_b,
+            mean_l,
+            mean_a,
+            mean_b,
+            var_l,
+            var_a,
+            var_b,
             bg_score: 0.0,
         });
         return;
     }
 
     let (channel, _) = if var_l >= var_a && var_l >= var_b {
-        (0, &lab_l)  // L*
+        (0, &lab_l) // L*
     } else if var_a >= var_b {
-        (1, &lab_a)  // a*
+        (1, &lab_a) // a*
     } else {
-        (2, &lab_b)  // b*
+        (2, &lab_b) // b*
     };
 
-    let channel_data: &[f64] = if channel == 0 { lab_l } else if channel == 1 { lab_a } else { lab_b };
+    let channel_data: &[f64] = if channel == 0 {
+        lab_l
+    } else if channel == 1 {
+        lab_a
+    } else {
+        lab_b
+    };
 
     // 中位数分割
     let median = median_value(channel_data, &indices);
@@ -89,8 +99,9 @@ fn median_cut_partition(
         return;
     }
 
-    if left.len() as f64 / (left.len() + right.len()) as f64 > 0.95 ||
-       right.len() as f64 / (left.len() + right.len()) as f64 > 0.95 {
+    if left.len() as f64 / (left.len() + right.len()) as f64 > 0.95
+        || right.len() as f64 / (left.len() + right.len()) as f64 > 0.95
+    {
         // 避免分裂过于不均衡
         clusters.push(build_cluster(lab_l, lab_a, lab_b, indices));
         return;
@@ -104,15 +115,34 @@ fn build_cluster(lab_l: &[f64], lab_a: &[f64], lab_b: &[f64], indices: Vec<usize
     let (mean_l, var_l) = mean_var_sel(lab_l, &indices);
     let (mean_a, var_a) = mean_var_sel(lab_a, &indices);
     let (mean_b, var_b) = mean_var_sel(lab_b, &indices);
-    Cluster { pixels: vec![], indices, mean_l, mean_a, mean_b, var_l, var_a, var_b, bg_score: 0.0 }
+    Cluster {
+        pixels: vec![],
+        indices,
+        mean_l,
+        mean_a,
+        mean_b,
+        var_l,
+        var_a,
+        var_b,
+        bg_score: 0.0,
+    }
 }
 
 fn mean_var_sel(data: &[f64], indices: &[usize]) -> (f64, f64) {
-    if indices.is_empty() { return (0.0, 0.0); }
+    if indices.is_empty() {
+        return (0.0, 0.0);
+    }
     let n = indices.len() as f64;
     let sum: f64 = indices.iter().map(|&i| data[i]).sum();
     let mean = sum / n;
-    let var: f64 = indices.iter().map(|&i| { let d = data[i] - mean; d * d }).sum::<f64>() / n;
+    let var: f64 = indices
+        .iter()
+        .map(|&i| {
+            let d = data[i] - mean;
+            d * d
+        })
+        .sum::<f64>()
+        / n;
     (mean, var)
 }
 
@@ -127,11 +157,17 @@ fn median_value(data: &[f64], indices: &[usize]) -> f64 {
 /// 对每个簇计算背景分数: 簇内像素落在边界 band 的比例 + 簇中心到边界样本的距离
 fn score_clusters(
     clusters: &mut [Cluster],
-    lab_l: &[f64], lab_a: &[f64], lab_b: &[f64],
-    w: u32, h: u32, params: &ColorPartitionParams,
+    lab_l: &[f64],
+    lab_a: &[f64],
+    lab_b: &[f64],
+    w: u32,
+    h: u32,
+    params: &ColorPartitionParams,
 ) {
     let n_pixels = (w * h) as usize;
-    if n_pixels == 0 { return; }
+    if n_pixels == 0 {
+        return;
+    }
 
     let band = params.border_band.max(1);
 
@@ -139,27 +175,46 @@ fn score_clusters(
     let mut border_mask = vec![false; n_pixels];
     // Top
     for y in 0..band.min(h) {
-        for x in 0..w { border_mask[(y * w + x) as usize] = true; }
+        for x in 0..w {
+            border_mask[(y * w + x) as usize] = true;
+        }
     }
     // Bottom
     for y in (h.saturating_sub(band))..h {
-        for x in 0..w { border_mask[(y * w + x) as usize] = true; }
+        for x in 0..w {
+            border_mask[(y * w + x) as usize] = true;
+        }
     }
     // Left
     for y in band..h.saturating_sub(band) {
-        for x in 0..band.min(w) { border_mask[(y * w + x) as usize] = true; }
+        for x in 0..band.min(w) {
+            border_mask[(y * w + x) as usize] = true;
+        }
     }
     // Right
     for y in band..h.saturating_sub(band) {
-        for x in (w.saturating_sub(band))..w { border_mask[(y * w + x) as usize] = true; }
+        for x in (w.saturating_sub(band))..w {
+            border_mask[(y * w + x) as usize] = true;
+        }
     }
 
     // 采样边界 LAB 值做背景模型
-    let border_l: Vec<f64> = (0..n_pixels).filter(|&i| border_mask[i]).map(|i| lab_l[i]).collect();
-    let border_a: Vec<f64> = (0..n_pixels).filter(|&i| border_mask[i]).map(|i| lab_a[i]).collect();
-    let border_b: Vec<f64> = (0..n_pixels).filter(|&i| border_mask[i]).map(|i| lab_b[i]).collect();
+    let border_l: Vec<f64> = (0..n_pixels)
+        .filter(|&i| border_mask[i])
+        .map(|i| lab_l[i])
+        .collect();
+    let border_a: Vec<f64> = (0..n_pixels)
+        .filter(|&i| border_mask[i])
+        .map(|i| lab_a[i])
+        .collect();
+    let border_b: Vec<f64> = (0..n_pixels)
+        .filter(|&i| border_mask[i])
+        .map(|i| lab_b[i])
+        .collect();
 
-    if border_l.is_empty() { return; }
+    if border_l.is_empty() {
+        return;
+    }
 
     // 边界 LAB 稳健中心
     let bg_l = robust_center(&border_l);
@@ -189,7 +244,9 @@ fn score_clusters(
 }
 
 fn robust_center(data: &[f64]) -> f64 {
-    if data.is_empty() { return 0.0; }
+    if data.is_empty() {
+        return 0.0;
+    }
     let mut sorted = data.to_vec();
     sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
     let n = sorted.len();
@@ -203,7 +260,11 @@ fn robust_center(data: &[f64]) -> f64 {
 fn clusters_to_bg_mask(clusters: &[Cluster], n_pixels: usize, threshold: f64) -> Vec<f64> {
     let mut mask = vec![0.0; n_pixels];
     for cluster in clusters {
-        let v = if cluster.bg_score >= threshold { 1.0 } else { 0.0 };
+        let v = if cluster.bg_score >= threshold {
+            1.0
+        } else {
+            0.0
+        };
         for &idx in &cluster.indices {
             mask[idx] = v;
         }
@@ -216,11 +277,17 @@ fn clusters_to_bg_mask(clusters: &[Cluster], n_pixels: usize, threshold: f64) ->
 /// BFS flood-fill 从边界扩散，连通区域标记为背景
 fn bfs_connected_bg(
     raw_mask: &[f64],
-    lab_l: &[f64], lab_a: &[f64], lab_b: &[f64],
-    w: u32, h: u32, params: &ColorPartitionParams,
+    lab_l: &[f64],
+    lab_a: &[f64],
+    lab_b: &[f64],
+    w: u32,
+    h: u32,
+    params: &ColorPartitionParams,
 ) -> Vec<f64> {
     let n = (w * h) as usize;
-    if n == 0 { return vec![]; }
+    if n == 0 {
+        return vec![];
+    }
 
     let band = params.border_band.max(1);
     let score_threshold = params.bg_score_threshold;
@@ -246,7 +313,9 @@ fn bfs_connected_bg(
         for x in 0..w {
             let i = (y * w + x) as usize;
             if !visited[i] && raw_mask[i] >= score_threshold {
-                visited[i] = true; mask[i] = 1.0; queue.push_back((x, y));
+                visited[i] = true;
+                mask[i] = 1.0;
+                queue.push_back((x, y));
             }
         }
     }
@@ -255,13 +324,17 @@ fn bfs_connected_bg(
         for x in 0..band.min(w) {
             let i = (y * w + x) as usize;
             if !visited[i] && raw_mask[i] >= score_threshold {
-                visited[i] = true; mask[i] = 1.0; queue.push_back((x, y));
+                visited[i] = true;
+                mask[i] = 1.0;
+                queue.push_back((x, y));
             }
         }
         for x in (w.saturating_sub(band))..w {
             let i = (y * w + x) as usize;
             if !visited[i] && raw_mask[i] >= score_threshold {
-                visited[i] = true; mask[i] = 1.0; queue.push_back((x, y));
+                visited[i] = true;
+                mask[i] = 1.0;
+                queue.push_back((x, y));
             }
         }
     }
@@ -275,9 +348,13 @@ fn bfs_connected_bg(
         for (dx, dy) in &[(0i32, -1i32), (0, 1), (-1, 0), (1, 0)] {
             let nx = cx as i32 + dx;
             let ny = cy as i32 + dy;
-            if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 { continue; }
+            if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                continue;
+            }
             let ni = (ny as u32 * w + nx as u32) as usize;
-            if visited[ni] { continue; }
+            if visited[ni] {
+                continue;
+            }
             // 判断 LAB 距离是否在阈值内
             let d_l = (lab_l[ni] - cl) / 100.0;
             let d_a = (lab_a[ni] - ca) / 128.0;
@@ -307,7 +384,9 @@ fn erode(mask: &[f64], w: u32, h: u32, radius: u32) -> Vec<f64> {
                 for dx in -r..=r {
                     let px = x as i32 + dx;
                     let py = y as i32 + dy;
-                    if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 { continue; }
+                    if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 {
+                        continue;
+                    }
                     if mask[(py as u32 * w + px as u32) as usize] < 0.5 {
                         all_bg = false;
                         break 'outer;
@@ -331,7 +410,9 @@ fn dilate(mask: &[f64], w: u32, h: u32, radius: u32) -> Vec<f64> {
                 for dx in -r..=r {
                     let px = x as i32 + dx;
                     let py = y as i32 + dy;
-                    if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 { continue; }
+                    if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 {
+                        continue;
+                    }
                     if mask[(py as u32 * w + px as u32) as usize] >= 0.5 {
                         any_bg = true;
                         break 'outer;
@@ -373,9 +454,13 @@ pub struct PartitionResult {
 }
 
 pub fn partition_and_separate(
-    lab_l: &[f64], lab_a: &[f64], lab_b: &[f64],
+    lab_l: &[f64],
+    lab_a: &[f64],
+    lab_b: &[f64],
     rgb: &[[f64; 3]],
-    w: u32, h: u32, params: &ColorPartitionParams,
+    w: u32,
+    h: u32,
+    params: &ColorPartitionParams,
 ) -> PartitionResult {
     let n = (w * h) as usize;
     if n == 0 {
@@ -428,14 +513,20 @@ pub fn partition_and_separate(
         let closed = closing(&connected_mask, w, h, params.close_radius);
         if params.open_radius > 0 {
             opening(&closed, w, h, params.open_radius)
-        } else { closed }
+        } else {
+            closed
+        }
     } else if params.open_radius > 0 {
         opening(&connected_mask, w, h, params.open_radius)
-    } else { connected_mask.clone() };
+    } else {
+        connected_mask.clone()
+    };
 
     let erode_mask = if params.erode_radius > 0 {
         erode(&morph_mask, w, h, params.erode_radius)
-    } else { morph_mask.clone() };
+    } else {
+        morph_mask.clone()
+    };
     let erode_mask = if mask_mean(&erode_mask) > params.max_bg_ratio {
         raw_mask.clone()
     } else {
@@ -443,7 +534,10 @@ pub fn partition_and_separate(
     };
 
     // 6. 前景置信度
-    let fg_confidence: Vec<f64> = erode_mask.iter().map(|&m| (1.0 - m).clamp(0.0, 1.0)).collect();
+    let fg_confidence: Vec<f64> = erode_mask
+        .iter()
+        .map(|&m| (1.0 - m).clamp(0.0, 1.0))
+        .collect();
 
     // 7. 色块渲染图
     let color_clusters_rgb = render_clusters(&clusters, n, rgb);
@@ -489,12 +583,16 @@ fn mean_rgb_for_cluster(cluster: &Cluster, rgb: &[[f64; 3]]) -> [f64; 3] {
 
 fn merge_small_clusters(
     clusters: &mut Vec<Cluster>,
-    lab_l: &[f64], lab_a: &[f64], lab_b: &[f64],
+    lab_l: &[f64],
+    lab_a: &[f64],
+    lab_b: &[f64],
     params: &ColorPartitionParams,
 ) {
     let total = lab_l.len();
     let min_area = (total as f64 * params.min_cluster_area_ratio) as usize;
-    if min_area < 2 { return; }
+    if min_area < 2 {
+        return;
+    }
 
     let mut i = 0;
     while i < clusters.len() {
@@ -503,12 +601,17 @@ fn merge_small_clusters(
             let mut best_j = None;
             let mut best_dist = f64::MAX;
             for j in 0..clusters.len() {
-                if j == i || clusters[j].indices.len() < min_area { continue; }
+                if j == i || clusters[j].indices.len() < min_area {
+                    continue;
+                }
                 let d_l = (clusters[i].mean_l - clusters[j].mean_l) / 100.0;
                 let d_a = (clusters[i].mean_a - clusters[j].mean_a) / 128.0;
                 let d_b = (clusters[i].mean_b - clusters[j].mean_b) / 128.0;
                 let dist = d_l * d_l + d_a * d_a + d_b * d_b;
-                if dist < best_dist { best_dist = dist; best_j = Some(j); }
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_j = Some(j);
+                }
             }
             if let Some(j) = best_j {
                 // 合并 i 到 j
@@ -527,7 +630,9 @@ fn merge_small_clusters(
 
 fn reduce_cluster_count(
     clusters: &mut Vec<Cluster>,
-    lab_l: &[f64], lab_a: &[f64], lab_b: &[f64],
+    lab_l: &[f64],
+    lab_a: &[f64],
+    lab_b: &[f64],
     max_clusters: usize,
 ) {
     let max_clusters = max_clusters.max(1);

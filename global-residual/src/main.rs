@@ -141,20 +141,20 @@ fn main() -> anyhow::Result<()> {
 
         // ── Save ──
         let sat_path = format!("{out_dir}/{stem}_sat.png");
-        sat_res.save(&sat_path).context("saving saturation residual")?;
+        sat_res
+            .save(&sat_path)
+            .context("saving saturation residual")?;
 
         let light_path = format!("{out_dir}/{stem}_light.png");
-        light_res.save(&light_path).context("saving lightness residual")?;
+        light_res
+            .save(&light_path)
+            .context("saving lightness residual")?;
 
         let lab_path = format!("{out_dir}/{stem}_lab.png");
         lab_res.save(&lab_path).context("saving LAB residual")?;
 
-        println!(
-            "    → sat residual (μ={mean_sat:.4}):  {sat_path}"
-        );
-        println!(
-            "    → light residual (μ={mean_light:.4}): {light_path}"
-        );
+        println!("    → sat residual (μ={mean_sat:.4}):  {sat_path}");
+        println!("    → light residual (μ={mean_light:.4}): {light_path}");
         println!(
             "    → LAB residual  (μ_L={mean_l:.2} μ_a={mean_a:.2} μ_b={mean_b:.2}): {lab_path}"
         );

@@ -9,10 +9,7 @@ use crate::params::RobustCenterParams;
 // ── Global Residual ──
 
 /// 计算 HSL lightness 全局残差: |pixel - robust_center| (稳健亮度中心)
-pub fn compute_global_light_residual(
-    hsl_l: &[f64],
-    rcp: &RobustCenterParams,
-) -> Vec<f64> {
+pub fn compute_global_light_residual(hsl_l: &[f64], rcp: &RobustCenterParams) -> Vec<f64> {
     let center = robust_center(hsl_l, rcp);
     hsl_l.iter().map(|&v| (v - center).abs()).collect()
 }
@@ -21,20 +18,14 @@ pub fn compute_global_light_residual(
 ///
 /// Lab a* 值域约 [-128, 127]，先归一化到 [0, 1] 再计算稳健中心和残差。
 /// 残差域与被归一化通道一致 [0, 1]，后续由 percentile_normalize 统一处理。
-pub fn compute_global_lab_a_residual(
-    lab_a: &[f64],
-    rcp: &RobustCenterParams,
-) -> Vec<f64> {
+pub fn compute_global_lab_a_residual(lab_a: &[f64], rcp: &RobustCenterParams) -> Vec<f64> {
     let normalized: Vec<f64> = lab_a.iter().map(|&v| (v + 128.0) / 256.0).collect();
     let center = robust_center(&normalized, rcp);
     normalized.iter().map(|&v| (v - center).abs()).collect()
 }
 
 /// 计算 LAB b* 全局残差（黄-蓝轴）: |pixel - robust_center|
-pub fn compute_global_lab_b_residual(
-    lab_b: &[f64],
-    rcp: &RobustCenterParams,
-) -> Vec<f64> {
+pub fn compute_global_lab_b_residual(lab_b: &[f64], rcp: &RobustCenterParams) -> Vec<f64> {
     let normalized: Vec<f64> = lab_b.iter().map(|&v| (v + 128.0) / 256.0).collect();
     let center = robust_center(&normalized, rcp);
     normalized.iter().map(|&v| (v - center).abs()).collect()
@@ -66,7 +57,9 @@ fn robust_center(data: &[f64], rcp: &RobustCenterParams) -> f64 {
             let base = rcp.log_base;
             let ln_base = base.ln();
             let denom = (eps + 1.0_f64).ln() / ln_base; // = log_base(1+eps)
-            data.iter().map(|&v| (eps + v).ln() / ln_base / denom).collect()
+            data.iter()
+                .map(|&v| (eps + v).ln() / ln_base / denom)
+                .collect()
         }
         _ => panic!(
             "global_residual.compression must be 'gamma' or 'log', got '{}'",

@@ -14,8 +14,8 @@ fn dct_matrix() -> [[f64; DCT_N]; DCT_N] {
         let alpha = if i == 0 { inv_sqrt_n } else { sqrt_2_over_n };
         for j in 0..DCT_N {
             t[i][j] = alpha
-                * ((2.0 * j as f64 + 1.0) * i as f64 * std::f64::consts::PI
-                    / (2.0 * DCT_N as f64)).cos();
+                * ((2.0 * j as f64 + 1.0) * i as f64 * std::f64::consts::PI / (2.0 * DCT_N as f64))
+                    .cos();
         }
     }
     t
@@ -57,7 +57,9 @@ fn high_freq_ratio(coeffs: &[[f64; DCT_N]; DCT_N], threshold: usize) -> f64 {
     let mut high_freq = 0.0;
     for u in 0..DCT_N {
         for v in 0..DCT_N {
-            if u == 0 && v == 0 { continue; }
+            if u == 0 && v == 0 {
+                continue;
+            }
             let e = coeffs[u][v] * coeffs[u][v];
             total_ac += e;
             if u + v >= threshold {

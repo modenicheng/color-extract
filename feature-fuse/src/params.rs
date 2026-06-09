@@ -200,7 +200,7 @@ impl Default for ImpressionParams {
 // Background 参数（三阶段管线: 色域切分 + BFS 连通 + 软 mask）
 // =============================================================================
 
-/// Phase 3 软 mask 精炼参数（box blur 控制）
+/// Phase 3 软 mask 精炼参数（box blur + 前景锐化控制）
 #[derive(Debug, Deserialize)]
 pub struct SoftMaskParams {
     /// Phase 3 边界背景似然图的 box blur 半径。
@@ -211,6 +211,12 @@ pub struct SoftMaskParams {
     /// 0 = 自适应（基于图像边长: clamp(min(w,h)/40, 6, 24)）。>0 = 固定像素半径。
     #[serde(default = "default_soft_blur")]
     pub fg_confidence_blur_radius: u32,
+    /// Phase 3 前景置信度图的反遮罩锐化强度。0 = 禁用；建议 0.2~0.8。
+    #[serde(default)]
+    pub fg_confidence_sharpen_amount: f64,
+    /// 前景置信度反遮罩锐化半径。仅在 sharpen_amount > 0 时生效。
+    #[serde(default = "default_fg_confidence_sharpen_radius")]
+    pub fg_confidence_sharpen_radius: u32,
 }
 
 impl Default for SoftMaskParams {
@@ -218,12 +224,17 @@ impl Default for SoftMaskParams {
         Self {
             border_bg_blur_radius: 0,
             fg_confidence_blur_radius: 0,
+            fg_confidence_sharpen_amount: 0.0,
+            fg_confidence_sharpen_radius: 1,
         }
     }
 }
 
 fn default_soft_blur() -> u32 {
     0
+}
+fn default_fg_confidence_sharpen_radius() -> u32 {
+    1
 }
 
 #[derive(Debug, Deserialize)]

@@ -30,28 +30,50 @@ fn dct_matrix() -> [[f64; N]; N] {
 
 fn transpose(m: &[[f64; N]; N]) -> [[f64; N]; N] {
     let mut out = [[0.0; N]; N];
-    for i in 0..N { for j in 0..N { out[j][i] = m[i][j]; } }
+    for i in 0..N {
+        for j in 0..N {
+            out[j][i] = m[i][j];
+        }
+    }
     out
 }
 
 fn dct_2d(block: &[[f64; N]; N], t: &[[f64; N]; N]) -> [[f64; N]; N] {
     let tt = transpose(t);
     let mut rows_dct = [[0.0; N]; N];
-    for r in 0..N { for c in 0..N { for k in 0..N { rows_dct[r][c] += block[r][k] * tt[k][c]; } } }
+    for r in 0..N {
+        for c in 0..N {
+            for k in 0..N {
+                rows_dct[r][c] += block[r][k] * tt[k][c];
+            }
+        }
+    }
     let mut out = [[0.0; N]; N];
-    for r in 0..N { for c in 0..N { for k in 0..N { out[r][c] += t[r][k] * rows_dct[k][c]; } } }
+    for r in 0..N {
+        for c in 0..N {
+            for k in 0..N {
+                out[r][c] += t[r][k] * rows_dct[k][c];
+            }
+        }
+    }
     out
 }
 
 fn high_freq_ratio(coeffs: &[[f64; N]; N]) -> f64 {
     let mut total_ac = 0.0;
     let mut high_freq = 0.0;
-    for u in 0..N { for v in 0..N {
-        if u == 0 && v == 0 { continue; }
-        let e = coeffs[u][v] * coeffs[u][v];
-        total_ac += e;
-        if u + v >= THRESHOLD { high_freq += e; }
-    }}
+    for u in 0..N {
+        for v in 0..N {
+            if u == 0 && v == 0 {
+                continue;
+            }
+            let e = coeffs[u][v] * coeffs[u][v];
+            total_ac += e;
+            if u + v >= THRESHOLD {
+                high_freq += e;
+            }
+        }
+    }
     high_freq / (total_ac + 1e-10)
 }
 
@@ -67,11 +89,13 @@ fn complexity_map(gray: &[f64], w: usize, h: usize) -> Vec<f64> {
     map.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         for x in 0..w {
             let mut block = [[0.0; N]; N];
-            for dy in 0..N { for dx in 0..N {
-                let px = (x as i32 + dx as i32 - offset).clamp(0, w as i32 - 1) as usize;
-                let py = (y as i32 + dy as i32 - offset).clamp(0, h as i32 - 1) as usize;
-                block[dy][dx] = gray[py * w + px];
-            }}
+            for dy in 0..N {
+                for dx in 0..N {
+                    let px = (x as i32 + dx as i32 - offset).clamp(0, w as i32 - 1) as usize;
+                    let py = (y as i32 + dy as i32 - offset).clamp(0, h as i32 - 1) as usize;
+                    block[dy][dx] = gray[py * w + px];
+                }
+            }
             let coeffs = dct_2d(&block, &t);
             row[x] = high_freq_ratio(&coeffs);
         }
@@ -106,13 +130,18 @@ fn heatmap(v: f64) -> Rgb<u8> {
 // ---------------------------------------------------------------------------
 
 fn fit_dim(w: u32, h: u32, max_dim: u32) -> (u32, u32) {
-    if w <= max_dim && h <= max_dim { return (w, h); }
+    if w <= max_dim && h <= max_dim {
+        return (w, h);
+    }
     let s = max_dim as f64 / w.max(h) as f64;
     ((w as f64 * s) as u32, (h as f64 * s) as u32).max((1, 1))
 }
 
 fn to_gray(pixels: &[[f64; 3]]) -> Vec<f64> {
-    pixels.iter().map(|&[r, g, b]| 0.299 * r + 0.587 * g + 0.114 * b).collect()
+    pixels
+        .iter()
+        .map(|&[r, g, b]| 0.299 * r + 0.587 * g + 0.114 * b)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -135,10 +164,23 @@ fn load_resize_gray(path: &Path) -> Result<(String, u32, u32, Vec<f64>)> {
 
     let rgb = resized.to_rgb8();
     let (fw, fh) = rgb.dimensions();
-    let pixels: Vec<[f64; 3]> = rgb.pixels().map(|p| [p[0] as f64 / 255.0, p[1] as f64 / 255.0, p[2] as f64 / 255.0]).collect();
+    let pixels: Vec<[f64; 3]> = rgb
+        .pixels()
+        .map(|p| {
+            [
+                p[0] as f64 / 255.0,
+                p[1] as f64 / 255.0,
+                p[2] as f64 / 255.0,
+            ]
+        })
+        .collect();
     let gray = to_gray(&pixels);
 
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("img").to_string();
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("img")
+        .to_string();
     Ok((stem, fw, fh, gray))
 }
 
@@ -155,8 +197,14 @@ fn main() -> Result<()> {
 
     for entry in &entries {
         let path = entry.path();
-        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
-        if ext != "jpg" && ext != "jpeg" && ext != "png" { continue; }
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if ext != "jpg" && ext != "jpeg" && ext != "png" {
+            continue;
+        }
 
         let (stem, w, h, gray) = load_resize_gray(&path)?;
         println!("{} {}×{}", stem, w, h);

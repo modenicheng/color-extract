@@ -196,8 +196,8 @@ global_residual:
 # 此阶段 border_bg_blur_radius 和 fg_confidence_blur_radius 控制两处 box blur。
 # 高斯距离衰减 exp(-(dist/0.16)²) 生成软背景似然。soft_background_from_partition
 # 根据硬 mask 统计特性自适应混合: 纯黑/纯白 → 权 0（全用软似然），二值混合 → 权
-# 0.08，多值 → 权 0.15。最终盒式模糊平滑。fg_confidence 结合了颜色反背景、中心
-# 偏向、显著性占位并盒式模糊 + percentile 归一化。
+# 0.08，多值 → 权 0.15。fg_confidence 结合了颜色反背景、中心偏向、显著性占位，
+# 经盒式模糊、可选反遮罩锐化，再做 percentile 归一化。
 
 background:
   partition:
@@ -227,6 +227,12 @@ background:
     # >0 = 固定像素半径。半径越大 → 前景置信度越平滑、主体轮廓边缘越软。
     # 默认 0 适用大多数场景；若主体边缘有锯齿可调大 (如 30~40) 使过渡更自然。
     fg_confidence_blur_radius: 1
+    # 前景置信度反遮罩锐化强度。
+    # 作用于 fg_confidence_blur_radius 之后、percentile 归一化之前: v + (v - blur(v)) * amount。
+    # 0 = 禁用；0.2~0.5 = 温和提边；0.8+ 会更硬，也更容易放大噪声或纹理。
+    fg_confidence_sharpen_amount: 0.35
+    # 反遮罩锐化半径。半径越大 → 提升更宽的轮廓过渡；1~3 更适合保留细边缘。
+    fg_confidence_sharpen_radius: 1
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 4c. Subject Prior（高斯中心偏向）
@@ -300,8 +306,8 @@ weights_add:
   local_light: 0.00
   local_lab_a: 0.00
   local_lab_b: 0.00
-  background_mask_morph: 0.00
-  background_fg_confidence: 0.30
+  background_mask_morph: 0.30
+  background_fg_confidence: 0.00
   subject_prior: 0.00
 
 # 乘法分支权重（与加法独立，可完全不同）
@@ -344,7 +350,7 @@ fusion:
   #   gamma = 1 → 无变化（线性映射）。
   #   gamma > 1 → 整体压暗，亮区更亮、暗区更暗，对比度增强。
   # 建议范围: 0.3~2.0，默认 1.0 不做额外调整。
-  gamma: 1.0
+  gamma: 1.3
 
   # 软乘法 baseline。防止某特征值为 0 时乘积归零。
   # 实际公式中用 (ε + (1-ε)*feat) 替代原始 feat。

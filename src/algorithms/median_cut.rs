@@ -1,7 +1,7 @@
 use crate::algorithms::{AlgorithmResult, PaletteEntry};
 use crate::colorspace::ColorSpace;
 use crate::timing::timed;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 /// Run the Median Cut color quantization algorithm.
 ///
@@ -55,10 +55,7 @@ pub fn run(pixels: &[[f64; 3]], cs: ColorSpace, k: usize) -> Result<AlgorithmRes
         }
 
         // 2c. Compute the mean color for each bucket (in target-space coords).
-        let means: Vec<[f64; 3]> = buckets
-            .iter()
-            .map(|bucket| mean(bucket, &coords))
-            .collect();
+        let means: Vec<[f64; 3]> = buckets.iter().map(|bucket| mean(bucket, &coords)).collect();
 
         // 2d. Convert means back to normalized RGB.
         let rgb_means = cs.convert_batch_from(&means);
@@ -152,14 +149,12 @@ fn mean(indices: &[usize], coords: &[[f64; 3]]) -> [f64; 3] {
     if n == 0.0 {
         return [0.0; 3];
     }
-    let sum = indices
-        .iter()
-        .fold([0.0; 3], |acc, &i| {
-            [
-                acc[0] + coords[i][0],
-                acc[1] + coords[i][1],
-                acc[2] + coords[i][2],
-            ]
-        });
+    let sum = indices.iter().fold([0.0; 3], |acc, &i| {
+        [
+            acc[0] + coords[i][0],
+            acc[1] + coords[i][1],
+            acc[2] + coords[i][2],
+        ]
+    });
     [sum[0] / n, sum[1] / n, sum[2] / n]
 }

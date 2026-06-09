@@ -33,7 +33,13 @@ pub fn save_rgb_png(rgb: &[[f64; 3]], w: u32, h: u32, path: &Path) -> Result<()>
 // ── 8×8 位图字体标签绘制 ──
 
 /// 在 RGB 图像上绘制文本（使用 font8x8 位图字体，8×8 等宽）
-fn draw_text_rgb(canvas: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, text: &str, x: i32, y: i32, color: Rgb<u8>) {
+fn draw_text_rgb(
+    canvas: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
+    text: &str,
+    x: i32,
+    y: i32,
+    color: Rgb<u8>,
+) {
     let (cw, ch) = canvas.dimensions();
     for (ci, &ch_byte) in text.as_bytes().iter().enumerate() {
         let idx = ch_byte as usize;
@@ -184,7 +190,13 @@ pub fn make_contact_sheet_full(
             let text_w = label.len() as i32 * 8;
             let label_x = ox as i32 + (cell_w as i32 - text_w) / 2;
             let label_y = oy as i32 + cell_h as i32 + 4;
-            draw_text_rgb(&mut sheet, label, label_x.max(0), label_y, Rgb([40, 40, 40]));
+            draw_text_rgb(
+                &mut sheet,
+                label,
+                label_x.max(0),
+                label_y,
+                Rgb([40, 40, 40]),
+            );
         }
     }
 
@@ -194,9 +206,17 @@ pub fn make_contact_sheet_full(
     let ts_text_w = timestamp.len() as i32 * 8;
     let ts_label_x = sheet_w as i32 - ts_text_w - 4;
     let ts_label_y = ts_oy as i32 + cell_h as i32 + 4;
-    draw_text_rgb(&mut sheet, timestamp, ts_label_x.max(0), ts_label_y, Rgb([120, 120, 120]));
+    draw_text_rgb(
+        &mut sheet,
+        timestamp,
+        ts_label_x.max(0),
+        ts_label_y,
+        Rgb([120, 120, 120]),
+    );
 
-    sheet.save(path).context(format!("save contact sheet {}", path.display()))?;
+    sheet
+        .save(path)
+        .context(format!("save contact sheet {}", path.display()))?;
     Ok(())
 }
 
@@ -232,7 +252,8 @@ fn shorten_feature_name(name: &str) -> String {
         "background_fg_confidence" => "BG Conf",
         "subject_prior" => "Subj Prior",
         other => other,
-    }.to_string()
+    }
+    .to_string()
 }
 
 /// 将 fused 图 name 转为 contact sheet 显示用的短标签
@@ -247,11 +268,18 @@ fn fuse_display_name(name: &str) -> String {
         "fused_hybrid_filtered" => "Filt Hybrid",
         "Imp Color" => "Imp Color",
         other => other,
-    }.to_string()
+    }
+    .to_string()
 }
 
 /// 将 f32 [0,1] 特征图转为 RGB 缩略图（灰度映射到 RGB）
-fn make_thumb_gray_f32(data: &[f64], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+fn make_thumb_gray_f32(
+    data: &[f64],
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
     if data.is_empty() {
         // 空白占位（用于对齐补齐的格子）
         return ImageBuffer::from_fn(dst_w, dst_h, |_, _| Rgb([255, 255, 255]));
@@ -270,7 +298,13 @@ fn make_thumb_gray_f32(data: &[f64], src_w: u32, src_h: u32, dst_w: u32, dst_h: 
 }
 
 /// 将 RGB [0,1] 原图转为 RGB 缩略图
-fn make_thumb_rgb(data: &[[f64; 3]], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+fn make_thumb_rgb(
+    data: &[[f64; 3]],
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
     let orig: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(src_w, src_h, |x, y| {
         let i = (y * src_w + x) as usize;
         let r = (data[i][0].clamp(0.0, 1.0) * 255.0) as u8;

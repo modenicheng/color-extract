@@ -144,12 +144,14 @@ fn write_body(html: &mut String, entries: &[ImageEntry]) {
     html.push_str("</header>\n");
 
     html.push_str("<table>\n");
-    html.push_str("<thead><tr>\
+    html.push_str(
+        "<thead><tr>\
         <th>Image</th>\
         <th class=\"img-col\">Resized</th>\
         <th class=\"img-col\">Filt Hybr</th>\
         <th>Impression</th>\
-        </tr></thead>\n");
+        </tr></thead>\n",
+    );
     html.push_str("<tbody>\n");
 
     for e in entries {

@@ -15,8 +15,7 @@ fn dct_matrix() -> [[f64; DCT_N]; DCT_N] {
         let alpha = if i == 0 { inv_sqrt_n } else { sqrt_2_over_n };
         for j in 0..DCT_N {
             t[i][j] = alpha
-                * ((2.0 * j as f64 + 1.0) * i as f64 * std::f64::consts::PI
-                    / (2.0 * DCT_N as f64))
+                * ((2.0 * j as f64 + 1.0) * i as f64 * std::f64::consts::PI / (2.0 * DCT_N as f64))
                     .cos();
         }
     }

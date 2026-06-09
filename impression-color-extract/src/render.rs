@@ -47,11 +47,19 @@ pub fn save_rgb_png(rgb: &[[f64; 3]], w: u32, h: u32, path: &Path) -> Result<()>
 
 // ── 8×8 位图字体 ──
 
-fn draw_text_rgb(canvas: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, text: &str, x: i32, y: i32, color: Rgb<u8>) {
+fn draw_text_rgb(
+    canvas: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
+    text: &str,
+    x: i32,
+    y: i32,
+    color: Rgb<u8>,
+) {
     let (cw, ch) = canvas.dimensions();
     for (ci, &ch_byte) in text.as_bytes().iter().enumerate() {
         let idx = ch_byte as usize;
-        if idx >= font8x8::legacy::BASIC_LEGACY.len() { continue; }
+        if idx >= font8x8::legacy::BASIC_LEGACY.len() {
+            continue;
+        }
         let glyph = &font8x8::legacy::BASIC_LEGACY[idx];
         for row in 0..8 {
             let row_data = glyph[row];
@@ -74,8 +82,10 @@ pub fn make_contact_sheet(
     original: &[[f64; 3]],
     features: &[(&str, &[f64])],
     fused: &[(&str, &[f64])],
-    w: u32, h: u32,
-    cols: u32, thumb_w: u32,
+    w: u32,
+    h: u32,
+    cols: u32,
+    thumb_w: u32,
     palette: &[PaletteEntry],
     timestamp: &str,
     path: &Path,
@@ -128,7 +138,9 @@ pub fn make_contact_sheet(
     let sheet_h = rows * (step_h + pad) + pad;
 
     let mut sheet: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::new(sheet_w, sheet_h);
-    for pixel in sheet.pixels_mut() { *pixel = Rgb([255, 255, 255]); }
+    for pixel in sheet.pixels_mut() {
+        *pixel = Rgb([255, 255, 255]);
+    }
 
     for (idx, (thumb, label)) in thumbs.iter().zip(labels.iter()).enumerate() {
         let col = idx as u32 % cols;
@@ -147,9 +159,17 @@ pub fn make_contact_sheet(
     // 时间戳
     let ts_oy = pad + (rows - 1) * (step_h + pad) + cell_h as u32;
     let ts_text_w = timestamp.len() as i32 * 8;
-    draw_text_rgb(&mut sheet, timestamp, (sheet_w as i32 - ts_text_w - 4).max(0), ts_oy as i32 + 2, Rgb([120, 120, 120]));
+    draw_text_rgb(
+        &mut sheet,
+        timestamp,
+        (sheet_w as i32 - ts_text_w - 4).max(0),
+        ts_oy as i32 + 2,
+        Rgb([120, 120, 120]),
+    );
 
-    sheet.save(path).context(format!("save contact sheet {}", path.display()))?;
+    sheet
+        .save(path)
+        .context(format!("save contact sheet {}", path.display()))?;
     Ok(())
 }
 
@@ -161,9 +181,7 @@ pub fn generate_html_report(
     params_yaml: &str,
     path: &Path,
 ) -> Result<()> {
-    let mut html = String::from(
-        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-    );
+    let mut html = String::from("<!DOCTYPE html><html><head><meta charset='utf-8'>");
     html.push_str(&format!(
         "<title>Impression Color Extract — {}</title>",
         stem
@@ -203,7 +221,9 @@ pub fn generate_html_report(
 }
 
 fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 // ── 缩略图辅助 ──
@@ -219,11 +239,20 @@ fn shorten_name(name: &str) -> String {
         "fg_confidence" => "FG Conf",
         "fused" => "Fused",
         other => other,
-    }.to_string()
+    }
+    .to_string()
 }
 
-fn make_thumb_gray_f32(data: &[f64], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
-    if data.is_empty() { return make_empty_thumb(dst_w, dst_h); }
+fn make_thumb_gray_f32(
+    data: &[f64],
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+    if data.is_empty() {
+        return make_empty_thumb(dst_w, dst_h);
+    }
     let gray: GrayImage = ImageBuffer::from_fn(src_w, src_h, |x, y| {
         let v = (data[(y * src_w + x) as usize].clamp(0.0, 1.0) * 255.0) as u8;
         Luma([v])
@@ -235,7 +264,13 @@ fn make_thumb_gray_f32(data: &[f64], src_w: u32, src_h: u32, dst_w: u32, dst_h: 
     })
 }
 
-fn make_thumb_gray_f32_with_centroid(data: &[f64], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+fn make_thumb_gray_f32_with_centroid(
+    data: &[f64],
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
     let mut thumb = make_thumb_gray_f32(data, src_w, src_h, dst_w, dst_h);
     if let Some((cx, cy)) = weighted_centroid(data, src_w, src_h) {
         let scale_x = dst_w as f64 / src_w as f64;
@@ -246,8 +281,16 @@ fn make_thumb_gray_f32_with_centroid(data: &[f64], src_w: u32, src_h: u32, dst_w
     thumb
 }
 
-fn make_thumb_rgb(data: &[[f64; 3]], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
-    if data.is_empty() { return make_empty_thumb(dst_w, dst_h); }
+fn make_thumb_rgb(
+    data: &[[f64; 3]],
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+    if data.is_empty() {
+        return make_empty_thumb(dst_w, dst_h);
+    }
     let orig: RgbImage = ImageBuffer::from_fn(src_w, src_h, |x, y| {
         let i = (y * src_w + x) as usize;
         Rgb([
@@ -264,7 +307,9 @@ fn make_empty_thumb(w: u32, h: u32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
 }
 
 fn make_palette_thumb(palette: &[PaletteEntry], w: u32, h: u32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
-    if palette.is_empty() { return make_empty_thumb(w, h); }
+    if palette.is_empty() {
+        return make_empty_thumb(w, h);
+    }
     let n = palette.len() as u32;
     let swatch_w = w / n;
     ImageBuffer::from_fn(w, h, |x, _y| {

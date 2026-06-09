@@ -9,31 +9,47 @@ use crate::params::SpectralResidualParams;
 
 fn fft2d_real(data: &mut [Complex<f64>], w: usize, h: usize, forward: bool) {
     let mut planner = FftPlanner::new();
-    let fft_row: Arc<dyn rustfft::Fft<f64>> =
-        if forward { planner.plan_fft_forward(w) } else { planner.plan_fft_inverse(w) };
-    for y in 0..h { fft_row.process(&mut data[y * w..(y + 1) * w]); }
-    let fft_col: Arc<dyn rustfft::Fft<f64>> =
-        if forward { planner.plan_fft_forward(h) } else { planner.plan_fft_inverse(h) };
+    let fft_row: Arc<dyn rustfft::Fft<f64>> = if forward {
+        planner.plan_fft_forward(w)
+    } else {
+        planner.plan_fft_inverse(w)
+    };
+    for y in 0..h {
+        fft_row.process(&mut data[y * w..(y + 1) * w]);
+    }
+    let fft_col: Arc<dyn rustfft::Fft<f64>> = if forward {
+        planner.plan_fft_forward(h)
+    } else {
+        planner.plan_fft_inverse(h)
+    };
     let mut col = vec![Complex::new(0.0, 0.0); h];
     for x in 0..w {
-        for y in 0..h { col[y] = data[y * w + x]; }
+        for y in 0..h {
+            col[y] = data[y * w + x];
+        }
         fft_col.process(&mut col);
-        for y in 0..h { data[y * w + x] = col[y]; }
+        for y in 0..h {
+            data[y * w + x] = col[y];
+        }
     }
 }
 
 fn mean_filter(src: &[f64], w: usize, h: usize, kernel: usize) -> Vec<f64> {
-    if kernel <= 1 { return src.to_vec(); }
+    if kernel <= 1 {
+        return src.to_vec();
+    }
     let r = kernel / 2;
     let mut out = vec![0.0; w * h];
     for y in 0..h {
         for x in 0..w {
-            let mut sum = 0.0; let mut cnt = 0;
+            let mut sum = 0.0;
+            let mut cnt = 0;
             for dy in -(r as i32)..=(r as i32) {
                 for dx in -(r as i32)..=(r as i32) {
                     let px = (x as i32 + dx).clamp(0, w as i32 - 1) as usize;
                     let py = (y as i32 + dy).clamp(0, h as i32 - 1) as usize;
-                    sum += src[py * w + px]; cnt += 1;
+                    sum += src[py * w + px];
+                    cnt += 1;
                 }
             }
             out[y * w + x] = sum / cnt as f64;
@@ -50,9 +66,12 @@ fn gaussian_blur_1d(src: &[f64], w: usize, h: usize, sigma: f64) -> Vec<f64> {
     for i in 0..=2 * r {
         let x = i as f64 - r as f64;
         let v = (-x * x / (2.0 * sigma * sigma)).exp();
-        kernel.push(v); ksum += v;
+        kernel.push(v);
+        ksum += v;
     }
-    for k in &mut kernel { *k /= ksum; }
+    for k in &mut kernel {
+        *k /= ksum;
+    }
 
     let mut tmp = vec![0.0; w * h];
     for y in 0..h {
@@ -79,7 +98,13 @@ fn gaussian_blur_1d(src: &[f64], w: usize, h: usize, sigma: f64) -> Vec<f64> {
     out
 }
 
-fn spectral_residual_single(ch: &[f64], w: usize, h: usize, mean_filter_kernel: usize, gaussian_sigma: f64) -> Vec<f64> {
+fn spectral_residual_single(
+    ch: &[f64],
+    w: usize,
+    h: usize,
+    mean_filter_kernel: usize,
+    gaussian_sigma: f64,
+) -> Vec<f64> {
     let n = w * h;
     let mut data: Vec<Complex<f64>> = ch.iter().map(|&v| Complex::new(v, 0.0)).collect();
     fft2d_real(&mut data, w, h, true);
@@ -94,10 +119,18 @@ fn spectral_residual_single(ch: &[f64], w: usize, h: usize, mean_filter_kernel: 
 
     let avg_log_amp = mean_filter(&log_amp, w, h, mean_filter_kernel);
     let mut residual = vec![0.0; n];
-    for i in 0..n { residual[i] = log_amp[i] - avg_log_amp[i]; }
+    for i in 0..n {
+        residual[i] = log_amp[i] - avg_log_amp[i];
+    }
 
-    let mut recon: Vec<Complex<f64>> = residual.iter().zip(phase.iter())
-        .map(|(&r, &p)| { let mag = r.exp(); Complex::new(mag * p.cos(), mag * p.sin()) }).collect();
+    let mut recon: Vec<Complex<f64>> = residual
+        .iter()
+        .zip(phase.iter())
+        .map(|(&r, &p)| {
+            let mag = r.exp();
+            Complex::new(mag * p.cos(), mag * p.sin())
+        })
+        .collect();
     fft2d_real(&mut recon, w, h, false);
 
     let norm = n as f64;

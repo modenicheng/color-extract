@@ -736,6 +736,18 @@ fn soft_background_from_partition(mask: &[f64], border_bg: &[f64]) -> Vec<f64> {
         .collect()
 }
 
+fn unsharp_mask(mask: &[f64], w: usize, h: usize, radius: u32, amount: f64) -> Vec<f64> {
+    if amount <= 0.0 || radius == 0 {
+        return mask.to_vec();
+    }
+
+    let blurred = box_blur_mask(mask, w, h, radius as usize);
+    mask.iter()
+        .zip(blurred.iter())
+        .map(|(&v, &b)| (v + (v - b) * amount).clamp(0.0, 1.0))
+        .collect()
+}
+
 /// Compute foreground confidence from background: color_fg blended with saliency + subject_prior
 fn soft_foreground_from_background(
     bg: &[f64],
@@ -771,9 +783,17 @@ fn soft_foreground_from_background(
 
     let radius = blur_radius(wu.min(hu), soft_mask.fg_confidence_blur_radius, 40, 6, 24);
     let blurred = box_blur_mask(&fg, wu, hu, radius);
+    let sharpen_radius = soft_mask.fg_confidence_sharpen_radius.max(1);
+    let sharpened = unsharp_mask(
+        &blurred,
+        wu,
+        hu,
+        sharpen_radius,
+        soft_mask.fg_confidence_sharpen_amount,
+    );
 
     // Percentile normalize to [0, 1]
-    percentile_normalize_local(&blurred, 2.0, 98.0)
+    percentile_normalize_local(&sharpened, 2.0, 98.0)
 }
 
 /// Local percentile normalization (same logic as fusion::percentile_normalize)

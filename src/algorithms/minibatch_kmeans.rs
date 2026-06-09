@@ -1,9 +1,9 @@
-use super::{make_entry, sort_by_lightness, AlgorithmResult};
+use super::{AlgorithmResult, make_entry, sort_by_lightness};
 use crate::colorspace::ColorSpace;
 use crate::timing::timed;
-use anyhow::{anyhow, Result};
-use linfa::traits::{FitWith, Predict};
+use anyhow::{Result, anyhow};
 use linfa::DatasetBase;
+use linfa::traits::{FitWith, Predict};
 use linfa_clustering::{IncrKMeansError, KMeans};
 use ndarray::Array2;
 use rand::SeedableRng;
@@ -42,10 +42,7 @@ pub fn run(
         let k = k.min(n);
 
         // Build an ndarray matrix of shape (n, 3).
-        let data: Vec<f64> = converted
-            .iter()
-            .flat_map(|c| [c[0], c[1], c[2]])
-            .collect();
+        let data: Vec<f64> = converted.iter().flat_map(|c| [c[0], c[1], c[2]]).collect();
         let array = Array2::from_shape_vec((n, 3), data)
             .map_err(|e| anyhow!("failed to build ndarray from {} pixels: {}", n, e))?;
 
@@ -71,10 +68,7 @@ pub fn run(
         let max_iters = (num_batches / 4).min(20).max(5);
 
         // Pull batches from the shuffled dataset.
-        let mut batches = dataset
-            .sample_chunks(BATCH_SIZE)
-            .cycle()
-            .take(max_iters);
+        let mut batches = dataset.sample_chunks(BATCH_SIZE).cycle().take(max_iters);
 
         // First batch initialises the model — establishes concrete type for inference.
         let first_batch = batches
@@ -123,11 +117,7 @@ pub fn run(
         let mut palette = Vec::with_capacity(k);
 
         for i in 0..k {
-            let coords = [
-                centroids[[i, 0]],
-                centroids[[i, 1]],
-                centroids[[i, 2]],
-            ];
+            let coords = [centroids[[i, 0]], centroids[[i, 1]], centroids[[i, 2]]];
             let rgb = cs.convert_from(coords);
             let proportion = counts[i] as f64 / n as f64;
             palette.push(make_entry(rgb, proportion));

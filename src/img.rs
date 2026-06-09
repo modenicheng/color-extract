@@ -7,7 +7,7 @@ pub struct LoadedImage {
     pub filename: String,
     pub width: u32,
     pub height: u32,
-    pub pixels: Vec<[f64; 3]>, // normalized RGB 0..1, row-major
+    pub pixels: Vec<[f64; 3]>,  // normalized RGB 0..1, row-major
     pub base64_preview: String, // resized thumbnail as base64 JPEG
 }
 

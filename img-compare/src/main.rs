@@ -1,5 +1,5 @@
-use actix_web::{web, App, HttpServer, HttpResponse};
 use actix_files as fs;
+use actix_web::{App, HttpResponse, HttpServer, web};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
@@ -30,7 +30,9 @@ fn parse_stem(stem: &str) -> (String, String) {
         return (stem.to_string(), "original".to_string());
     }
     let after = &stem[p + 2..];
-    let dlen = after.find(|c: char| !c.is_ascii_digit()).unwrap_or(after.len());
+    let dlen = after
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(after.len());
     let pre_end = p + 2 + dlen;
     let prefix = stem[..pre_end].to_string();
     let method = if pre_end < stem.len() && stem.as_bytes().get(pre_end) == Some(&b'_') {
@@ -64,7 +66,9 @@ fn scan_groups() -> Vec<Group> {
     if let Ok(dirs) = std::fs::read_dir("output") {
         for d in dirs.flatten() {
             let Ok(ft) = d.file_type() else { continue };
-            if !ft.is_dir() { continue; }
+            if !ft.is_dir() {
+                continue;
+            }
             let src = d.file_name().to_string_lossy().to_string();
             let sub = format!("output/{src}");
             if let Ok(files) = std::fs::read_dir(&sub) {
@@ -82,7 +86,12 @@ fn scan_groups() -> Vec<Group> {
         }
     }
 
-    map.into_iter().map(|(k, v)| Group { prefix: k, images: v }).collect()
+    map.into_iter()
+        .map(|(k, v)| Group {
+            prefix: k,
+            images: v,
+        })
+        .collect()
 }
 
 static GROUPS: LazyLock<Vec<Group>> = LazyLock::new(scan_groups);
@@ -90,7 +99,9 @@ static GROUPS: LazyLock<Vec<Group>> = LazyLock::new(scan_groups);
 // ---- handlers ----
 
 async fn index() -> HttpResponse {
-    HttpResponse::Ok().content_type("text/html; charset=utf-8").body(HTML)
+    HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(HTML)
 }
 
 async fn get_groups() -> HttpResponse {
@@ -109,8 +120,16 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .route("/", web::get().to(index))
             .route("/api/groups", web::get().to(get_groups))
-            .service(fs::Files::new("/imgs", "imgs").show_files_listing().use_last_modified(true))
-            .service(fs::Files::new("/output", "output").show_files_listing().use_last_modified(true))
+            .service(
+                fs::Files::new("/imgs", "imgs")
+                    .show_files_listing()
+                    .use_last_modified(true),
+            )
+            .service(
+                fs::Files::new("/output", "output")
+                    .show_files_listing()
+                    .use_last_modified(true),
+            )
     })
     .bind("127.0.0.1:3000")?
     .run()

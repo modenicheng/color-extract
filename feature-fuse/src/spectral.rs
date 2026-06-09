@@ -98,7 +98,14 @@ fn gaussian_blur_1d(src: &[f64], w: usize, h: usize, sigma: f64) -> Vec<f64> {
 }
 
 /// 对单通道计算频谱残差显著性，返回 [0,1] 归一化图
-fn spectral_residual_single(ch: &[f64], w: usize, h: usize, mfk: u32, gs: f64, gamma: f64) -> Vec<f64> {
+fn spectral_residual_single(
+    ch: &[f64],
+    w: usize,
+    h: usize,
+    mfk: u32,
+    gs: f64,
+    gamma: f64,
+) -> Vec<f64> {
     let n = w * h;
 
     // 0. Gamma 预处理（FFT 前）

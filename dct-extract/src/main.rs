@@ -82,14 +82,14 @@ fn main() -> anyhow::Result<()> {
 
             // 5. K‑Means++ (4D)
             println!("   Running K‑Means++ (with c)…");
-            let kmeans = cluster_4d::kmeans_plus_plus(&data_4d, k, rng_seed)
-                .expect("KMeans++ failed");
+            let kmeans =
+                cluster_4d::kmeans_plus_plus(&data_4d, k, rng_seed).expect("KMeans++ failed");
             print_result_summary("KMeans++(c)", &kmeans);
 
             // 6. Mini‑Batch K‑Means (4D)
             println!("   Running Mini‑Batch K‑Means (with c)…");
-            let minibatch = cluster_4d::mini_batch_kmeans(&data_4d, k, rng_seed)
-                .expect("MiniBatch failed");
+            let minibatch =
+                cluster_4d::mini_batch_kmeans(&data_4d, k, rng_seed).expect("MiniBatch failed");
             print_result_summary("MiniBatch(c)", &minibatch);
 
             // 7. Build 6‑D dataset [L, a, b, c, nx, ny]
@@ -108,8 +108,8 @@ fn main() -> anyhow::Result<()> {
 
             // 8. K‑Means++ (6D) — with coordinates
             println!("   Running K‑Means++ (c + xy)…");
-            let kmeans_6d = cluster_4d::kmeans_plus_plus_6d(&data_6d, k, rng_seed)
-                .expect("KMeans++ 6D failed");
+            let kmeans_6d =
+                cluster_4d::kmeans_plus_plus_6d(&data_6d, k, rng_seed).expect("KMeans++ 6D failed");
             print_result_summary("KMeans++(c+xy)", &kmeans_6d);
 
             // 9. Mini‑Batch K‑Means (6D) — with coordinates

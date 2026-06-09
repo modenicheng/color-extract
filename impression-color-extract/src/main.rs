@@ -2,33 +2,34 @@
 // impression-color-extract — 背景/主体分离对印象色提取的影响探索
 // =============================================================================
 
-mod params;
-mod image;
 mod dct;
-mod gradient;
-mod spectral;
-mod residual;
-mod partition;
-mod palette;
 mod fusion;
+mod gradient;
+mod image;
+mod palette;
+mod params;
+mod partition;
 mod render;
+mod residual;
+mod spectral;
 
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
-use crate::params::{load_params, Params, SoftMaskParams};
-use crate::image::load_image;
 use crate::dct::compute_dct_complexity;
-use crate::gradient::compute_lab_gradient;
-use crate::spectral::compute_spectral_residual;
-use crate::residual::{compute_local_light_residual, compute_local_sat_residual};
-use crate::partition::partition_and_separate;
-use crate::palette::extract_palette;
 use crate::fusion::percentile_normalize;
+use crate::gradient::compute_lab_gradient;
+use crate::image::load_image;
+use crate::palette::extract_palette;
+use crate::params::{Params, SoftMaskParams, load_params};
+use crate::partition::partition_and_separate;
 use crate::render::{
-    save_gray_png, save_gray_png_with_centroid, save_rgb_png, make_contact_sheet, generate_html_report,
+    generate_html_report, make_contact_sheet, save_gray_png, save_gray_png_with_centroid,
+    save_rgb_png,
 };
+use crate::residual::{compute_local_light_residual, compute_local_sat_residual};
+use crate::spectral::compute_spectral_residual;
 
 fn main() -> Result<()> {
     let start_total = std::time::Instant::now();
@@ -38,11 +39,13 @@ fn main() -> Result<()> {
     let params = load_params(params_path)?;
 
     // CLI 覆盖
-    let max_dim: u32 = std::env::args().nth(1)
+    let max_dim: u32 = std::env::args()
+        .nth(1)
         .and_then(|s| s.parse().ok())
         .unwrap_or(params.max_dim);
 
-    let out_base: PathBuf = std::env::args().nth(2)
+    let out_base: PathBuf = std::env::args()
+        .nth(2)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(&params.output.dir));
 
@@ -58,10 +61,15 @@ fn main() -> Result<()> {
         .collect();
     entries.sort_by_key(|e| e.path());
 
-    let image_paths: Vec<PathBuf> = entries.iter()
+    let image_paths: Vec<PathBuf> = entries
+        .iter()
         .filter(|e| {
-            let ext = e.path().extension()
-                .and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+            let ext = e
+                .path()
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_lowercase();
             ext == "jpg" || ext == "jpeg" || ext == "png"
         })
         .map(|e| e.path())
@@ -73,7 +81,8 @@ fn main() -> Result<()> {
     println!("Found {} image(s)", image_paths.len());
 
     // ── 并行处理 ──
-    let results: Vec<Result<String>> = image_paths.par_iter()
+    let results: Vec<Result<String>> = image_paths
+        .par_iter()
         .map(|path| process_one(path, &params, max_dim, &out_base))
         .collect();
 
@@ -82,14 +91,23 @@ fn main() -> Result<()> {
     let mut errors = Vec::new();
     for r in results {
         match r {
-            Ok(stem) => { println!("  ✓ {stem}"); success += 1; }
+            Ok(stem) => {
+                println!("  ✓ {stem}");
+                success += 1;
+            }
             Err(e) => errors.push(e),
         }
     }
 
     let elapsed = start_total.elapsed();
-    println!("\nDone! {success}/{} image(s) in {:.2}s", image_paths.len(), elapsed.as_secs_f64());
-    for e in &errors { eprintln!("  Error: {e:#}"); }
+    println!(
+        "\nDone! {success}/{} image(s) in {:.2}s",
+        image_paths.len(),
+        elapsed.as_secs_f64()
+    );
+    for e in &errors {
+        eprintln!("  Error: {e:#}");
+    }
 
     Ok(())
 }
@@ -114,7 +132,13 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
     save_gray_png_with_centroid(&dct_norm, w, h, &out_dir.join("dct_complexity.png"))?;
 
     // ── (2) LAB 梯度 ──
-    let lab_raw = compute_lab_gradient(&data.lab_l, &data.lab_a, &data.lab_b, w as usize, h as usize);
+    let lab_raw = compute_lab_gradient(
+        &data.lab_l,
+        &data.lab_a,
+        &data.lab_b,
+        w as usize,
+        h as usize,
+    );
     let lab_norm = percentile_normalize(&lab_raw, p_low, p_high);
     save_gray_png(&lab_norm, w, h, &out_dir.join("lab_gradient.png"))?;
 
@@ -141,8 +165,13 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
 
     // ── (5) 色域切分 + 背景分离 ──
     let pr = partition_and_separate(
-        &data.lab_l, &data.lab_a, &data.lab_b,
-        &data.rgb, w, h, &params.color_partition,
+        &data.lab_l,
+        &data.lab_a,
+        &data.lab_b,
+        &data.rgb,
+        w,
+        h,
+        &params.color_partition,
     );
 
     let n_pixels = (w * h) as usize;
@@ -169,7 +198,15 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
         params.color_partition.border_band,
     );
     let (bg_mask_raw, bg_mask_morph, fg_confidence) = if has_partition {
-        refine_soft_masks(&pr.bg_mask_raw, &pr.bg_mask_morph, &saliency_fg, &border_bg, w, h, &params.soft_mask)
+        refine_soft_masks(
+            &pr.bg_mask_raw,
+            &pr.bg_mask_morph,
+            &saliency_fg,
+            &border_bg,
+            w,
+            h,
+            &params.soft_mask,
+        )
     } else {
         let fg = soft_foreground_from_background(&border_bg, &saliency_fg, w, h, &params.soft_mask);
         let bg = invert_mask(&fg);
@@ -178,7 +215,12 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
 
     // 保存背景相关图
     if has_partition {
-        save_rgb_png(&pr.color_clusters_rgb, w, h, &out_dir.join("color_clusters.png"))?;
+        save_rgb_png(
+            &pr.color_clusters_rgb,
+            w,
+            h,
+            &out_dir.join("color_clusters.png"),
+        )?;
 
         // 由于 clusters 顺序可能变化，重新构建与像素顺序一致的 bg_candidate
         let mut bg_candidate_full = vec![0.0; n_pixels];
@@ -188,7 +230,9 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
             } else {
                 0.0
             };
-            for &idx in &c.indices { bg_candidate_full[idx] = v; }
+            for &idx in &c.indices {
+                bg_candidate_full[idx] = v;
+            }
         }
         save_gray_png(&bg_candidate_full, w, h, &out_dir.join("bg_candidate.png"))?;
         save_gray_png(&border_bg, w, h, &out_dir.join("border_bg.png"))?;
@@ -200,15 +244,22 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
     // ── (6) 特征融合（使用权重的软加法）──
     let weights = &params.feature_weights;
     let features: [&[f64]; 7] = [
-        &dct_norm, &lab_norm, &sr_norm,
-        &loc_l_norm, &loc_s_norm,
+        &dct_norm,
+        &lab_norm,
+        &sr_norm,
+        &loc_l_norm,
+        &loc_s_norm,
         &bg_mask_morph,
         &fg_confidence,
     ];
     let weight_vals = [
-        weights.dct, weights.lab_grad, weights.spectral,
-        weights.local_light, weights.local_sat,
-        weights.bg_mask, weights.fg_confidence,
+        weights.dct,
+        weights.lab_grad,
+        weights.spectral,
+        weights.local_light,
+        weights.local_sat,
+        weights.bg_mask,
+        weights.fg_confidence,
     ];
 
     let w_sum: f64 = weight_vals.iter().sum();
@@ -217,11 +268,17 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
     let mut fused = vec![0.0; n_pixels];
     for (fi, feat) in features.iter().enumerate() {
         let w = weight_vals[fi] / w_sum;
-        if w < 1e-12 { continue; }
-        for j in 0..n_pixels { fused[j] += feat[j] * w; }
+        if w < 1e-12 {
+            continue;
+        }
+        for j in 0..n_pixels {
+            fused[j] += feat[j] * w;
+        }
     }
     // Gamma correction
-    for j in 0..n_pixels { fused[j] = fused[j].clamp(0.0, 1.0); }
+    for j in 0..n_pixels {
+        fused[j] = fused[j].clamp(0.0, 1.0);
+    }
     save_gray_png(&fused, w, h, &out_dir.join("fused.png"))?;
 
     // ── (7) 调色板提取（仅前景区域）──
@@ -247,11 +304,19 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
         ("fused", &fused),
     ];
 
-    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+    let ts = chrono::Local::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
     make_contact_sheet(
-        &data.rgb, &feature_slices, &[],
-        w, h, params.output.contact_sheet_cols, params.output.contact_sheet_thumb_w,
-        &palette, &ts,
+        &data.rgb,
+        &feature_slices,
+        &[],
+        w,
+        h,
+        params.output.contact_sheet_cols,
+        params.output.contact_sheet_thumb_w,
+        &palette,
+        &ts,
         &out_base.join(format!("{stem}_contact_sheet.png")),
     )?;
 
@@ -447,7 +512,8 @@ fn refine_soft_masks(
 
 fn soft_background_from_partition(mask: &[f64], border_bg: &[f64]) -> Vec<f64> {
     let stats = mask_stats(mask);
-    let partition_weight = if stats.unique_values <= 2 && (stats.mean <= 0.02 || stats.mean >= 0.98) {
+    let partition_weight = if stats.unique_values <= 2 && (stats.mean <= 0.02 || stats.mean >= 0.98)
+    {
         0.0
     } else if stats.unique_values <= 2 {
         0.40
@@ -484,7 +550,11 @@ fn soft_foreground_from_background(
         }
     }
     let radius = ((w.min(h) / 40).clamp(6, 24)) as usize;
-    percentile_normalize(&box_blur_mask(&fg, w as usize, h as usize, radius), 2.0, 98.0)
+    percentile_normalize(
+        &box_blur_mask(&fg, w as usize, h as usize, radius),
+        2.0,
+        98.0,
+    )
 }
 
 fn weighted3(a: f64, aw: f64, b: f64, bw: f64, c: f64, cw: f64) -> f64 {
@@ -509,7 +579,10 @@ struct MaskStats {
 
 fn mask_stats(mask: &[f64]) -> MaskStats {
     if mask.is_empty() {
-        return MaskStats { mean: 0.0, unique_values: 0 };
+        return MaskStats {
+            mean: 0.0,
+            unique_values: 0,
+        };
     }
     let mean = mask.iter().sum::<f64>() / mask.len() as f64;
     let mut seen = Vec::new();
@@ -522,5 +595,8 @@ fn mask_stats(mask: &[f64]) -> MaskStats {
             }
         }
     }
-    MaskStats { mean, unique_values: seen.len() }
+    MaskStats {
+        mean,
+        unique_values: seen.len(),
+    }
 }

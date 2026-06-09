@@ -1,9 +1,9 @@
+use palette::white_point::D65;
 use palette::{
+    FromColor, Hsl, IntoColor, Lab, Oklab, Srgb, Xyz,
     cam16::{Cam16, Cam16Jmh, Cam16UcsJab, Parameters},
     hues::Cam16Hue,
-    FromColor, Hsl, IntoColor, Lab, Oklab, Srgb, Xyz,
 };
-use palette::white_point::D65;
 
 /// All supported color spaces for the extraction algorithms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -47,7 +47,11 @@ impl ColorSpace {
             Self::HSL => {
                 let srgb = Srgb::new(rgb[0] as f32, rgb[1] as f32, rgb[2] as f32);
                 let hsl: Hsl = srgb.into_color();
-                [hsl.hue.into_positive_degrees() as f64, hsl.saturation as f64, hsl.lightness as f64]
+                [
+                    hsl.hue.into_positive_degrees() as f64,
+                    hsl.saturation as f64,
+                    hsl.lightness as f64,
+                ]
             }
             Self::CAM16 => {
                 let srgb = Srgb::new(rgb[0] as f32, rgb[1] as f32, rgb[2] as f32);
@@ -83,9 +87,7 @@ impl ColorSpace {
                 let srgb: Srgb = Srgb::from_color(hsl);
                 [srgb.red as f64, srgb.green as f64, srgb.blue as f64]
             }
-            Self::CAM16 => {
-                cam16ucs_to_rgb(coords[0] as f32, coords[1] as f32, coords[2] as f32)
-            }
+            Self::CAM16 => cam16ucs_to_rgb(coords[0] as f32, coords[1] as f32, coords[2] as f32),
         };
         [clamp01(rgb[0]), clamp01(rgb[1]), clamp01(rgb[2])]
     }

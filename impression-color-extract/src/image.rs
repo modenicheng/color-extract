@@ -72,7 +72,18 @@ pub fn load_image(path: &Path, max_dim: u32) -> Result<ImageData> {
         .unwrap_or("img")
         .to_string();
 
-    Ok(ImageData { stem, w: fw, h: fh, rgb: out_rgb, lab_l, lab_a, lab_b, hsl_s, hsl_l, gray })
+    Ok(ImageData {
+        stem,
+        w: fw,
+        h: fh,
+        rgb: out_rgb,
+        lab_l,
+        lab_a,
+        lab_b,
+        hsl_s,
+        hsl_l,
+        gray,
+    })
 }
 
 fn fit_dimensions(w: u32, h: u32, max_dim: u32) -> (u32, u32) {

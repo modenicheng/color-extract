@@ -73,7 +73,9 @@ fn gaussian_blur(src: &[f64], w: usize, h: usize) -> Vec<f64> {
         kernel.push(v);
         ksum += v;
     }
-    for k in &mut kernel { *k /= ksum; }
+    for k in &mut kernel {
+        *k /= ksum;
+    }
 
     // horizontal pass
     let mut tmp = vec![0.0; w * h];
@@ -132,7 +134,9 @@ fn spectral_residual(gray: &[f64], w: usize, h: usize) -> Vec<f64> {
     }
 
     // 4. Reconstruct: F' = exp(R + i·P)
-    let mut recon: Vec<Complex<f64>> = residual.iter().zip(phase.iter())
+    let mut recon: Vec<Complex<f64>> = residual
+        .iter()
+        .zip(phase.iter())
         .map(|(&r, &p)| {
             let mag = r.exp();
             Complex::new(mag * p.cos(), mag * p.sin())
@@ -151,7 +155,9 @@ fn spectral_residual(gray: &[f64], w: usize, h: usize) -> Vec<f64> {
     let min = saliency.iter().cloned().fold(f64::MAX, f64::min);
     let max = saliency.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let range = (max - min).max(1e-12);
-    for v in &mut saliency { *v = (*v - min) / range; }
+    for v in &mut saliency {
+        *v = (*v - min) / range;
+    }
 
     saliency
 }
@@ -161,7 +167,9 @@ fn spectral_residual(gray: &[f64], w: usize, h: usize) -> Vec<f64> {
 // ---------------------------------------------------------------------------
 
 fn fit_dim(w: u32, h: u32, max_dim: u32) -> (u32, u32) {
-    if w <= max_dim && h <= max_dim { return (w, h); }
+    if w <= max_dim && h <= max_dim {
+        return (w, h);
+    }
     let s = max_dim as f64 / w.max(h) as f64;
     ((w as f64 * s) as u32, (h as f64 * s) as u32).max((1, 1))
 }
@@ -188,14 +196,22 @@ fn load_resize_lab(path: &Path) -> Result<(String, u32, u32, Vec<f64>, Vec<f64>,
     let mut b = Vec::with_capacity(n);
 
     for p in rgb.pixels() {
-        let srgb = Srgb::new(p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0);
+        let srgb = Srgb::new(
+            p[0] as f32 / 255.0,
+            p[1] as f32 / 255.0,
+            p[2] as f32 / 255.0,
+        );
         let lab: Lab = srgb.into_color();
         l.push(lab.l as f64);
         a.push(lab.a as f64);
         b.push(lab.b as f64);
     }
 
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("img").to_string();
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("img")
+        .to_string();
     Ok((stem, fw, fh, l, a, b))
 }
 
@@ -216,8 +232,14 @@ fn main() -> Result<()> {
 
     for entry in &entries {
         let path = entry.path();
-        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
-        if ext != "jpg" && ext != "jpeg" && ext != "png" { continue; }
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if ext != "jpg" && ext != "jpeg" && ext != "png" {
+            continue;
+        }
 
         let (stem, w, h, l_ch, a_ch, b_ch) = load_resize_lab(&path)?;
         println!("{} {}×{}", stem, w, h);
@@ -238,7 +260,9 @@ fn main() -> Result<()> {
         let smin = saliency.iter().cloned().fold(f64::MAX, f64::min);
         let smax = saliency.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let srange = (smax - smin).max(1e-12);
-        for v in &mut saliency { *v = (*v - smin) / srange; }
+        for v in &mut saliency {
+            *v = (*v - smin) / srange;
+        }
 
         // --- 灰度显著图: 白=显著, 黑=不显著 ---
         let img_heat: ImageBuffer<Luma<u8>, Vec<u8>> = ImageBuffer::from_fn(w, h, |x, y| {

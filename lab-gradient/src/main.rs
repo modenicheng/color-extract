@@ -5,7 +5,9 @@ use std::path::Path;
 
 /// Fit dimensions keeping aspect ratio, longest side ≤ max_dim.
 fn fit_dim(w: u32, h: u32, max_dim: u32) -> (u32, u32) {
-    if w <= max_dim && h <= max_dim { return (w, h); }
+    if w <= max_dim && h <= max_dim {
+        return (w, h);
+    }
     let s = max_dim as f64 / w.max(h) as f64;
     ((w as f64 * s) as u32, (h as f64 * s) as u32).max((1, 1))
 }
@@ -33,14 +35,22 @@ fn load_resize_lab(path: &Path) -> Result<(String, u32, u32, Vec<f64>, Vec<f64>,
     let mut b = Vec::with_capacity(n);
 
     for p in rgb.pixels() {
-        let srgb = Srgb::new(p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0);
+        let srgb = Srgb::new(
+            p[0] as f32 / 255.0,
+            p[1] as f32 / 255.0,
+            p[2] as f32 / 255.0,
+        );
         let lab: Lab = srgb.into_color();
         l.push(lab.l as f64);
         a.push(lab.a as f64);
         b.push(lab.b as f64);
     }
 
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("img").to_string();
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("img")
+        .to_string();
     Ok((stem, fw, fh, l, a, b))
 }
 
@@ -57,11 +67,14 @@ fn sobel_magnitude(ch: &[f64], w: u32, h: u32) -> Vec<f64> {
     for y in 1..(h as usize - 1) {
         for x in 1..(wu - 1) {
             let i = y * wu + x;
-            let gx = -1.0 * ch[i - wu - 1] + 1.0 * ch[i - wu + 1]
-                     -2.0 * ch[i     - 1] + 2.0 * ch[i     + 1]
-                     -1.0 * ch[i + wu - 1] + 1.0 * ch[i + wu + 1];
+            let gx = -1.0 * ch[i - wu - 1] + 1.0 * ch[i - wu + 1] - 2.0 * ch[i - 1]
+                + 2.0 * ch[i + 1]
+                - 1.0 * ch[i + wu - 1]
+                + 1.0 * ch[i + wu + 1];
             let gy = -1.0 * ch[i - wu - 1] - 2.0 * ch[i - wu] - 1.0 * ch[i - wu + 1]
-                     + 1.0 * ch[i + wu - 1] + 2.0 * ch[i + wu] + 1.0 * ch[i + wu + 1];
+                + 1.0 * ch[i + wu - 1]
+                + 2.0 * ch[i + wu]
+                + 1.0 * ch[i + wu + 1];
             // Normalize by 8 to get approx per-pixel delta, then magnitude
             mag[i] = ((gx * gx + gy * gy).sqrt()) / 8.0;
         }
@@ -70,12 +83,20 @@ fn sobel_magnitude(ch: &[f64], w: u32, h: u32) -> Vec<f64> {
 }
 
 /// Map three channels (mag_r, mag_g, mag_b) to R/G/B, normalize each independently.
-fn to_rgb_image(ch_r: &[f64], ch_g: &[f64], ch_b: &[f64], w: u32, h: u32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+fn to_rgb_image(
+    ch_r: &[f64],
+    ch_g: &[f64],
+    ch_b: &[f64],
+    w: u32,
+    h: u32,
+) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
     let norm = |ch: &[f64]| -> Vec<u8> {
         let min = ch.iter().cloned().fold(f64::MAX, f64::min);
         let max = ch.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let range = (max - min).max(1e-12);
-        ch.iter().map(|&v| ((v - min) / range * 255.0) as u8).collect()
+        ch.iter()
+            .map(|&v| ((v - min) / range * 255.0) as u8)
+            .collect()
     };
     let r = norm(ch_r);
     let g = norm(ch_g);
@@ -99,11 +120,14 @@ fn main() -> Result<()> {
 
     for entry in &entries {
         let path = entry.path();
-        let ext = path.extension()
+        let ext = path
+            .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_lowercase();
-        if ext != "jpg" && ext != "jpeg" && ext != "png" { continue; }
+        if ext != "jpg" && ext != "jpeg" && ext != "png" {
+            continue;
+        }
 
         let (stem, w, h, l, a, b) = load_resize_lab(&path)?;
         println!("{} {}×{}", stem, w, h);
