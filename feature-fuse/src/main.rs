@@ -11,6 +11,7 @@ mod residual;
 mod background;
 mod fusion;
 mod render;
+mod html;
 
 use anyhow::{Context, Result};
 use rayon::prelude::*;
@@ -95,7 +96,7 @@ fn main() -> Result<()> {
     println!("Found {} image(s)", image_paths.len());
 
     // ── 多图片并行处理 ──
-    let results: Vec<Result<String>> = image_paths
+    let results: Vec<Result<(String, String)>> = image_paths
         .par_iter()
         .map(|path| {
             process_one_image(path, &params, max_dim, &out_base)
@@ -105,16 +106,25 @@ fn main() -> Result<()> {
     // ── 汇总 ──
     let mut success = 0;
     let mut errors = Vec::new();
+    let mut entries: Vec<html::ImageEntry> = Vec::new();
     for r in results {
         match r {
-            Ok(stem) => {
+            Ok((stem, ic_hex)) => {
                 println!("  ✓ {stem}");
+                entries.push(html::ImageEntry { stem, ic_hex });
                 success += 1;
             }
             Err(e) => {
                 errors.push(e);
             }
         }
+    }
+
+    // ── 生成 HTML 总览页 ──
+    if !entries.is_empty() {
+        let html_path = out_base.join("all.html");
+        html::generate_overview(&entries, &html_path)?;
+        println!("  HTML overview: {}", html_path.display());
     }
 
     let elapsed = start_total.elapsed();
@@ -132,7 +142,7 @@ fn main() -> Result<()> {
 }
 
 /// 处理单张图片：计算所有特征 → 归一化 → 融合 → 输出
-fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> Result<String> {
+fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> Result<(String, String)> {
     // ── 加载图片 ──
     let data = load_image(path, max_dim)?;
     let stem = data.stem.clone();
@@ -363,5 +373,5 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
 
     println!("    ✓ {stem} — all outputs in {}/", out_dir.display());
 
-    Ok(stem)
+    Ok((stem, ic_hex))
 }

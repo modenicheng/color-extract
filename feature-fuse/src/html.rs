@@ -1,0 +1,192 @@
+// =============================================================================
+// HTML 总览页生成 — 紧凑展示每张图片的 resized 原图、Filt Hybr、印象色
+// =============================================================================
+
+use anyhow::{Context, Result};
+use std::io::Write;
+
+/// 单张图片的 HTML 展示信息
+pub struct ImageEntry {
+    pub stem: String,
+    pub ic_hex: String,
+}
+
+/// 生成 HTML 总览页：每行展示 resized 原图 + Filt Hybr + 印象色
+pub fn generate_overview(entries: &[ImageEntry], output_path: &std::path::Path) -> Result<()> {
+    let mut html = String::with_capacity(64_000);
+
+    write_header(&mut html);
+    write_body(&mut html, entries);
+    write_footer(&mut html);
+
+    let mut file = std::fs::File::create(output_path)
+        .with_context(|| format!("create HTML file: {}", output_path.display()))?;
+    file.write_all(html.as_bytes())?;
+    Ok(())
+}
+
+// -----------------------------------------------------------------------------
+// HTML 模板
+// -----------------------------------------------------------------------------
+
+fn write_header(html: &mut String) {
+    html.push_str(
+        r#"<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Feature-Fuse Overview</title>
+<style>
+:root {
+    --bg: #0f0f1a;
+    --card: #1a1a2e;
+    --text: #e0e0e0;
+    --text-dim: #888;
+    --accent: #6c63ff;
+    --border: #2a2a4a;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    line-height: 1.4;
+    padding: 12px;
+}
+header {
+    text-align: center;
+    padding: 16px 12px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 12px;
+}
+header h1 { font-size: 1.3rem; color: var(--accent); }
+header .stats {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-top: 4px;
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+th {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    white-space: nowrap;
+}
+th.img-col { width: 33%; }
+td {
+    padding: 4px 8px;
+    border-bottom: 1px solid rgba(42, 42, 74, 0.5);
+    vertical-align: middle;
+}
+tr:hover { background: rgba(108, 99, 255, 0.05); }
+.stem {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    word-break: break-all;
+    max-width: 160px;
+}
+.thumb {
+    max-height: 100px;
+    max-width: 100%;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    display: block;
+}
+.ic-cell {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.ic-swatch {
+    width: 36px;
+    height: 36px;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.15);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    flex-shrink: 0;
+}
+.ic-hex {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.72rem;
+    color: #ccc;
+}
+footer {
+    text-align: center;
+    padding: 12px;
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    border-top: 1px solid var(--border);
+    margin-top: 12px;
+}
+</style>
+</head>
+"#,
+    );
+}
+
+fn write_body(html: &mut String, entries: &[ImageEntry]) {
+    html.push_str("<body>\n");
+    html.push_str("<header>\n");
+    html.push_str("<h1>Feature-Fuse Overview</h1>\n");
+    html.push_str(&format!(
+        "<div class=\"stats\">{} images — Resized / Filt Hybrid / Impression Color</div>\n",
+        entries.len()
+    ));
+    html.push_str("</header>\n");
+
+    html.push_str("<table>\n");
+    html.push_str("<thead><tr>\
+        <th>Image</th>\
+        <th class=\"img-col\">Resized</th>\
+        <th class=\"img-col\">Filt Hybr</th>\
+        <th>Impression</th>\
+        </tr></thead>\n");
+    html.push_str("<tbody>\n");
+
+    for e in entries {
+        let stem_escaped = html_escape(&e.stem);
+        html.push_str("<tr>\n");
+        html.push_str(&format!("<td class=\"stem\">{stem_escaped}</td>\n"));
+        html.push_str(&format!(
+            "<td><img class=\"thumb\" src=\"{stem_escaped}/resized.png\" alt=\"{stem_escaped}\" loading=\"lazy\"></td>\n"
+        ));
+        html.push_str(&format!(
+            "<td><img class=\"thumb\" src=\"{stem_escaped}/fused_hybrid_filtered.png\" alt=\"filt hybrid\" loading=\"lazy\"></td>\n"
+        ));
+        html.push_str(&format!(
+            "<td><div class=\"ic-cell\">\
+                <div class=\"ic-swatch\" style=\"background:{};\"></div>\
+                <span class=\"ic-hex\">{}</span>\
+            </div></td>\n",
+            e.ic_hex, e.ic_hex
+        ));
+        html.push_str("</tr>\n");
+    }
+
+    html.push_str("</tbody>\n");
+    html.push_str("</table>\n");
+}
+
+fn write_footer(html: &mut String) {
+    html.push_str("<footer>\n");
+    html.push_str("<p>Generated by feature-fuse</p>\n");
+    html.push_str("</footer>\n");
+    html.push_str("</body>\n</html>\n");
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}

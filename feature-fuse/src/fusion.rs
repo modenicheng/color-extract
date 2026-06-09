@@ -29,7 +29,7 @@ pub fn weights_to_array(w: &Weights) -> Vec<f64> {
         w.dct, w.lab_grad, w.spectral,
         w.global_light, w.global_lab_a, w.global_lab_b,
         w.local_light, w.local_lab_a, w.local_lab_b,
-        w.background_lab, w.background_fg_confidence,
+        w.background_mask_morph, w.background_fg_confidence,
         w.subject_prior,
     ]
 }

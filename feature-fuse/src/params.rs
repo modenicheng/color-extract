@@ -45,7 +45,7 @@ pub struct Weights {
     pub local_light: f64,
     pub local_lab_a: f64,
     pub local_lab_b: f64,
-    pub background_lab: f64,
+    pub background_mask_morph: f64,
     pub background_fg_confidence: f64,
     pub subject_prior: f64,
 }
