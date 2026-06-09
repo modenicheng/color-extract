@@ -129,10 +129,10 @@ fn main() -> anyhow::Result<()> {
                 // LAB residuals mapped to RGB
                 // L*: 0..100 → map full range as fraction of its own range
                 let lr = ((lab.l as f64 - mean_l).abs() / 100.0 * 255.0).round() as u8;
-                // a*: −128..128 → span 256
-                let ar = ((lab.a as f64 - mean_a).abs() / 256.0 * 255.0).round() as u8;
-                // b*: −128..128 → span 256
-                let br = ((lab.b as f64 - mean_b).abs() / 256.0 * 255.0).round() as u8;
+                // a*: −128..127 → span 255
+                let ar = ((lab.a as f64 - mean_a).abs() / 255.0 * 255.0).round() as u8;
+                // b*: −128..127 → span 255
+                let br = ((lab.b as f64 - mean_b).abs() / 255.0 * 255.0).round() as u8;
                 lab_res.put_pixel(x, y, Rgb([lr.min(255), ar.min(255), br.min(255)]));
 
                 idx += 1;

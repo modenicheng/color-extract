@@ -140,6 +140,27 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
 
     let n_pixels = (w * h) as usize;
     let has_partition = params.color_partition.enabled && !pr.bg_mask_raw.is_empty();
+    let saliency_fg = soft_foreground_saliency(
+        &[&dct_norm, &lab_norm, &sr_norm, &loc_l_norm, &loc_s_norm],
+        &[0.18, 0.30, 0.22, 0.15, 0.15],
+        w,
+        h,
+    );
+    let border_bg = border_background_likelihood(
+        &data.lab_l,
+        &data.lab_a,
+        &data.lab_b,
+        w as usize,
+        h as usize,
+        params.color_partition.border_band,
+    );
+    let (bg_mask_raw, bg_mask_morph, fg_confidence) = if has_partition {
+        refine_soft_masks(&pr.bg_mask_raw, &pr.bg_mask_morph, &saliency_fg, &border_bg, w, h)
+    } else {
+        let fg = soft_foreground_from_background(&border_bg, &saliency_fg, w, h);
+        let bg = invert_mask(&fg);
+        (bg.clone(), bg, fg)
+    };
 
     // 保存背景相关图
     if has_partition {
@@ -156,9 +177,10 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
             for &idx in &c.indices { bg_candidate_full[idx] = v; }
         }
         save_gray_png(&bg_candidate_full, w, h, &out_dir.join("bg_candidate.png"))?;
-        save_gray_png(&pr.bg_mask_raw, w, h, &out_dir.join("bg_mask_raw.png"))?;
-        save_gray_png(&pr.bg_mask_morph, w, h, &out_dir.join("bg_mask_morph.png"))?;
-        save_gray_png(&pr.fg_confidence, w, h, &out_dir.join("fg_confidence.png"))?;
+        save_gray_png(&border_bg, w, h, &out_dir.join("border_bg.png"))?;
+        save_gray_png(&bg_mask_raw, w, h, &out_dir.join("bg_mask_raw.png"))?;
+        save_gray_png(&bg_mask_morph, w, h, &out_dir.join("bg_mask_morph.png"))?;
+        save_gray_png(&fg_confidence, w, h, &out_dir.join("fg_confidence.png"))?;
     }
 
     // ── (6) 特征融合（使用权重的软加法）──
@@ -166,8 +188,8 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
     let features: [&[f64]; 7] = [
         &dct_norm, &lab_norm, &sr_norm,
         &loc_l_norm, &loc_s_norm,
-        &pr.bg_mask_morph,
-        &pr.fg_confidence,
+        &bg_mask_morph,
+        &fg_confidence,
     ];
     let weight_vals = [
         weights.dct, weights.lab_grad, weights.spectral,
@@ -190,10 +212,9 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
 
     // ── (7) 调色板提取（仅前景区域）──
     let palette = if has_partition {
-        extract_palette(&data.rgb, &pr.fg_confidence, &params.palette)
+        extract_palette(&data.rgb, &fg_confidence, &params.palette)
     } else {
-        let ones: Vec<f64> = vec![1.0; n_pixels];
-        extract_palette(&data.rgb, &ones, &params.palette)
+        extract_palette(&data.rgb, &fg_confidence, &params.palette)
     };
 
     // ── (8) 输出 ──
@@ -207,8 +228,8 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
         ("spectral", &sr_norm),
         ("local_light", &loc_l_norm),
         ("local_sat", &loc_s_norm),
-        ("bg_mask", &pr.bg_mask_morph),
-        ("fg_confidence", &pr.fg_confidence),
+        ("bg_mask", &bg_mask_morph),
+        ("fg_confidence", &fg_confidence),
         ("fused", &fused),
     ];
 
@@ -217,7 +238,7 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
         &data.rgb, &feature_slices, &[],
         w, h, params.output.contact_sheet_cols, params.output.contact_sheet_thumb_w,
         &palette, &ts,
-        &out_dir.join("contact_sheet.png"),
+        &out_base.join(format!("{stem}_contact_sheet.png")),
     )?;
 
     // 单张 contact sheet（所有特征 + 调色板）
@@ -230,4 +251,224 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
     generate_html_report(&stem, &palette, &yaml_content, &out_dir.join("report.html"))?;
 
     Ok(stem)
+}
+
+fn soft_foreground_saliency(features: &[&[f64]], weights: &[f64], w: u32, h: u32) -> Vec<f64> {
+    if features.is_empty() {
+        return Vec::new();
+    }
+    let n = features[0].len();
+    let w_sum: f64 = weights.iter().sum();
+    if n == 0 || w_sum < 1e-12 {
+        return vec![0.0; n];
+    }
+    let mut saliency = vec![0.0; n];
+    for (feature, &weight) in features.iter().zip(weights.iter()) {
+        let w = weight / w_sum;
+        for i in 0..n {
+            saliency[i] += feature[i] * w;
+        }
+    }
+    let base = percentile_normalize(&saliency, 5.0, 95.0);
+    let radius = ((w.min(h) / 24).clamp(8, 32)) as usize;
+    let smooth = box_blur_mask(&base, w as usize, h as usize, radius);
+    let mut soft = vec![0.0; n];
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            let i = y * w as usize + x;
+            let subject = subject_prior(x, y, w as usize, h as usize);
+            soft[i] = (base[i] * 0.25 + smooth[i] * 0.45 + subject * 0.30).clamp(0.0, 1.0);
+        }
+    }
+    let mut soft = percentile_normalize(&soft, 2.0, 98.0);
+    for v in &mut soft {
+        *v = v.powf(0.85).clamp(0.0, 1.0);
+    }
+    soft
+}
+
+fn border_background_likelihood(
+    lab_l: &[f64],
+    lab_a: &[f64],
+    lab_b: &[f64],
+    w: usize,
+    h: usize,
+    border_band: u32,
+) -> Vec<f64> {
+    let n = w.saturating_mul(h);
+    if n == 0 {
+        return Vec::new();
+    }
+
+    let band = (border_band as usize).max(1).min(w.max(1)).min(h.max(1));
+    let mut border_indices = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            if x < band || y < band || x + band >= w || y + band >= h {
+                border_indices.push(y * w + x);
+            }
+        }
+    }
+    if border_indices.is_empty() {
+        return vec![0.0; n];
+    }
+
+    let max_prototypes = 96usize;
+    let step = (border_indices.len() / max_prototypes).max(1);
+    let prototypes: Vec<usize> = border_indices
+        .iter()
+        .step_by(step)
+        .take(max_prototypes)
+        .copied()
+        .collect();
+
+    let mut bg = vec![0.0; n];
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            let mut best = f64::MAX;
+            for &p in &prototypes {
+                let d_l = (lab_l[i] - lab_l[p]) / 100.0;
+                let d_a = (lab_a[i] - lab_a[p]) / 128.0;
+                let d_b = (lab_b[i] - lab_b[p]) / 128.0;
+                let d = (d_l * d_l + d_a * d_a + d_b * d_b).sqrt();
+                if d < best {
+                    best = d;
+                }
+            }
+            let color_bg = (-(best / 0.16).powi(2)).exp();
+            let edge_bg = 1.0 - center_prior(x, y, w, h);
+            bg[i] = (color_bg * (0.58 + 0.42 * edge_bg)).clamp(0.0, 1.0);
+        }
+    }
+
+    let radius = ((w.min(h) / 48).clamp(4, 16)) as usize;
+    box_blur_mask(&bg, w, h, radius)
+}
+
+fn center_prior(x: usize, y: usize, w: usize, h: usize) -> f64 {
+    if w == 0 || h == 0 {
+        return 0.0;
+    }
+    let nx = (x as f64 + 0.5) / w as f64 - 0.5;
+    let ny = (y as f64 + 0.5) / h as f64 - 0.5;
+    let dist = (nx * nx + ny * ny).sqrt() / 0.70710678118;
+    (1.0 - dist).clamp(0.0, 1.0)
+}
+
+fn subject_prior(x: usize, y: usize, w: usize, h: usize) -> f64 {
+    if w == 0 || h == 0 {
+        return 0.0;
+    }
+    let nx = (x as f64 + 0.5) / w as f64;
+    let ny = (y as f64 + 0.5) / h as f64;
+    let dx = (nx - 0.5) / 0.34;
+    let dy = (ny - 0.55) / 0.48;
+    (-(dx * dx + dy * dy)).exp().clamp(0.0, 1.0)
+}
+
+fn box_blur_mask(mask: &[f64], w: usize, h: usize, radius: usize) -> Vec<f64> {
+    if mask.is_empty() || w == 0 || h == 0 || radius == 0 {
+        return mask.to_vec();
+    }
+
+    let mut horizontal = vec![0.0; mask.len()];
+    for y in 0..h {
+        let mut prefix = vec![0.0; w + 1];
+        for x in 0..w {
+            prefix[x + 1] = prefix[x] + mask[y * w + x];
+        }
+        for x in 0..w {
+            let left = x.saturating_sub(radius);
+            let right = (x + radius).min(w - 1);
+            let sum = prefix[right + 1] - prefix[left];
+            horizontal[y * w + x] = sum / (right - left + 1) as f64;
+        }
+    }
+
+    let mut out = vec![0.0; mask.len()];
+    for x in 0..w {
+        let mut prefix = vec![0.0; h + 1];
+        for y in 0..h {
+            prefix[y + 1] = prefix[y] + horizontal[y * w + x];
+        }
+        for y in 0..h {
+            let top = y.saturating_sub(radius);
+            let bottom = (y + radius).min(h - 1);
+            let sum = prefix[bottom + 1] - prefix[top];
+            out[y * w + x] = sum / (bottom - top + 1) as f64;
+        }
+    }
+    out
+}
+
+fn refine_soft_masks(
+    bg_raw: &[f64],
+    bg_morph: &[f64],
+    saliency_fg: &[f64],
+    border_bg: &[f64],
+    w: u32,
+    h: u32,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let raw_bg = soft_background_from_partition(bg_raw, border_bg);
+    let morph_bg = soft_background_from_partition(bg_morph, border_bg);
+    let fg = soft_foreground_from_background(&morph_bg, saliency_fg, w, h);
+    let morph_bg = invert_mask(&fg);
+    (raw_bg, morph_bg, fg)
+}
+
+fn soft_background_from_partition(mask: &[f64], border_bg: &[f64]) -> Vec<f64> {
+    let stats = mask_stats(mask);
+    let partition_weight = if stats.unique_values <= 2 && (stats.mean <= 0.02 || stats.mean >= 0.98) {
+        0.0
+    } else if stats.unique_values <= 2 {
+        0.40
+    } else {
+        0.55
+    };
+    mask.iter()
+        .zip(border_bg.iter())
+        .map(|(&m, &b)| (m * partition_weight + b * (1.0 - partition_weight)).clamp(0.0, 1.0))
+        .collect()
+}
+
+fn soft_foreground_from_background(bg: &[f64], saliency_fg: &[f64], w: u32, h: u32) -> Vec<f64> {
+    let mut fg = vec![0.0; bg.len()];
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            let i = y * w as usize + x;
+            let color_fg = 1.0 - bg[i];
+            let subject = subject_prior(x, y, w as usize, h as usize);
+            fg[i] = (color_fg * 0.45 + saliency_fg[i] * 0.15 + subject * 0.40).clamp(0.0, 1.0);
+        }
+    }
+    let radius = ((w.min(h) / 40).clamp(6, 24)) as usize;
+    percentile_normalize(&box_blur_mask(&fg, w as usize, h as usize, radius), 2.0, 98.0)
+}
+
+fn invert_mask(mask: &[f64]) -> Vec<f64> {
+    mask.iter().map(|&v| (1.0 - v).clamp(0.0, 1.0)).collect()
+}
+
+struct MaskStats {
+    mean: f64,
+    unique_values: usize,
+}
+
+fn mask_stats(mask: &[f64]) -> MaskStats {
+    if mask.is_empty() {
+        return MaskStats { mean: 0.0, unique_values: 0 };
+    }
+    let mean = mask.iter().sum::<f64>() / mask.len() as f64;
+    let mut seen = Vec::new();
+    for &v in mask {
+        let q = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        if !seen.contains(&q) {
+            seen.push(q);
+            if seen.len() > 2 {
+                break;
+            }
+        }
+    }
+    MaskStats { mean, unique_values: seen.len() }
 }

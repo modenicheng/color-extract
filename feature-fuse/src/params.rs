@@ -95,7 +95,12 @@ pub struct SpectralResidualParams {
     pub gaussian_sigma: f64,
     /// 输入 gamma 校正指数（FFT 前对像素值做 powf），1.0 = 无变化
     pub gamma: f64,
+    /// 后处理 gamma 压缩指数（L₂ 融合 + 归一化后），<1 放大残差、>1 压制，1.0 = 无变化
+    #[serde(default = "default_one")]
+    pub post_gamma: f64,
 }
+
+fn default_one() -> f64 { 1.0 }
 
 impl Default for SpectralResidualParams {
     fn default() -> Self {
@@ -103,6 +108,7 @@ impl Default for SpectralResidualParams {
             mean_filter_kernel: 3,
             gaussian_sigma: 3.0,
             gamma: 1.0,
+            post_gamma: 1.0,
         }
     }
 }

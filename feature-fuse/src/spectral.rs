@@ -161,6 +161,7 @@ fn spectral_residual_single(ch: &[f64], w: usize, h: usize, mfk: u32, gs: f64, g
 
 /// 计算频谱残差显著性：LAB 三通道分别计算后 L₂ 融合
 /// gamma 仅作用于 L* 通道（亮度，始终 [0,1]），a*、b* 跳过
+/// post_gamma 在 L₂ 融合 + 归一化后对结果做 powf 压缩
 pub fn compute_spectral_residual(
     lab_l: &[f64],
     lab_a: &[f64],
@@ -170,6 +171,7 @@ pub fn compute_spectral_residual(
     mfk: u32,
     gs: f64,
     gamma: f64,
+    post_gamma: f64,
 ) -> Vec<f64> {
     // gamma 只作用于 L 通道
     let lab_l_gamma = if gamma == 1.0 {
@@ -192,6 +194,12 @@ pub fn compute_spectral_residual(
     let srange = (smax - smin).max(1e-12);
     for v in &mut fused {
         *v = (*v - smin) / srange;
+    }
+    // 后处理 gamma 压缩：<1 放大残差，>1 压制
+    if (post_gamma - 1.0).abs() > 1e-12 {
+        for v in &mut fused {
+            *v = v.powf(post_gamma);
+        }
     }
     fused
 }

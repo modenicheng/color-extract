@@ -179,6 +179,7 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
         params.spectral_residual.mean_filter_kernel,
         params.spectral_residual.gaussian_sigma,
         params.spectral_residual.gamma,
+        params.spectral_residual.post_gamma,
     );
     let sr_norm = percentile_normalize(&sr_raw, p_low, p_high);
     save_gray_png(&sr_norm, w, h, &out_dir.join("spectral_residual.png"))?;

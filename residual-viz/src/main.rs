@@ -127,11 +127,11 @@ fn main() -> anyhow::Result<()> {
             let bl = pixel[2] as f32 / 255.0;
             let srgb = Srgb::new(r, g, bl);
             let lab: Lab = srgb.into_color();
-            // L*: 0..100, a*: −128..128, b*: −128..128
+            // L*: 0..100, a*: −128..127, b*: −128..127
             // Normalise each to 0..255 for grayscale image storage
             let l_norm = (lab.l / 100.0).clamp(0.0, 1.0);
-            let a_norm = ((lab.a + 128.0) / 256.0).clamp(0.0, 1.0);
-            let b_norm = ((lab.b + 128.0) / 256.0).clamp(0.0, 1.0);
+            let a_norm = ((lab.a + 128.0) / 255.0).clamp(0.0, 1.0);
+            let b_norm = ((lab.b + 128.0) / 255.0).clamp(0.0, 1.0);
             l_img.put_pixel(x, y, Luma([(l_norm * 255.0) as u8]));
             a_img.put_pixel(x, y, Luma([(a_norm * 255.0) as u8]));
             b_img.put_pixel(x, y, Luma([(b_norm * 255.0) as u8]));
