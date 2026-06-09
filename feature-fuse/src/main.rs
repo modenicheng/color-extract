@@ -2,37 +2,37 @@
 // feature-fuse — 全链路特征图计算 + Hybrid Fusion
 // =============================================================================
 
-mod params;
-mod image;
-mod dct;
-mod gradient;
-mod spectral;
-mod residual;
 mod background;
+mod dct;
 mod fusion;
-mod render;
+mod gradient;
 mod html;
+mod image;
+mod params;
+mod render;
+mod residual;
+mod spectral;
 
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
-use crate::params::{Params, load_params, validate_filter};
-use crate::fusion::{percentile_normalize, hybrid_fusion, apply_filter, weights_to_array, composite_with_hybrid, kmeans_impression_color};
-use crate::image::load_image;
+use crate::background::{compute_background_features, compute_subject_prior};
 use crate::dct::compute_dct_complexity;
+use crate::fusion::{
+    apply_filter, composite_with_hybrid, hybrid_fusion, kmeans_impression_color,
+    percentile_normalize, percentile_normalize_unit_feature, weights_to_array,
+};
 use crate::gradient::compute_lab_gradient;
-use crate::spectral::compute_spectral_residual;
+use crate::image::load_image;
+use crate::params::{Params, load_params, validate_filter};
 use crate::residual::{
-    compute_global_light_residual, compute_global_lab_a_residual, compute_global_lab_b_residual,
-    compute_local_light_residual, compute_local_lab_a_residual, compute_local_lab_b_residual,
+    compute_global_lab_a_residual, compute_global_lab_b_residual, compute_global_light_residual,
+    compute_local_lab_a_residual, compute_local_lab_b_residual, compute_local_light_residual,
 };
-use crate::background::{
-    compute_background_features,
-    compute_subject_prior,
-};
+use crate::spectral::compute_spectral_residual;
 
-use crate::render::{save_gray_png, save_rgb_png, make_contact_sheet_full};
+use crate::render::{make_contact_sheet_full, save_gray_png, save_rgb_png};
 
 // =============================================================================
 // Main
@@ -98,9 +98,7 @@ fn main() -> Result<()> {
     // ── 多图片并行处理 ──
     let results: Vec<Result<(String, String)>> = image_paths
         .par_iter()
-        .map(|path| {
-            process_one_image(path, &params, max_dim, &out_base)
-        })
+        .map(|path| process_one_image(path, &params, max_dim, &out_base))
         .collect();
 
     // ── 汇总 ──
@@ -142,7 +140,12 @@ fn main() -> Result<()> {
 }
 
 /// 处理单张图片：计算所有特征 → 归一化 → 融合 → 输出
-fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> Result<(String, String)> {
+fn process_one_image(
+    path: &Path,
+    params: &Params,
+    max_dim: u32,
+    out_base: &Path,
+) -> Result<(String, String)> {
     // ── 加载图片 ──
     let data = load_image(path, max_dim)?;
     let stem = data.stem.clone();
@@ -169,14 +172,25 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
 
     // ── (1) DCT 纹理复杂度 ──
     let t0 = std::time::Instant::now();
-    let dct_raw = compute_dct_complexity(&gray, w as usize, h as usize, params.dct.high_freq_threshold);
+    let dct_raw = compute_dct_complexity(
+        &gray,
+        w as usize,
+        h as usize,
+        params.dct.high_freq_threshold,
+    );
     let dct_norm = percentile_normalize(&dct_raw, p_low, p_high);
     save_gray_png(&dct_norm, w, h, &out_dir.join("dct_complexity.png"))?;
     let t_dct = t0.elapsed();
 
     // ── (2) LAB 梯度 ──
     let t0 = std::time::Instant::now();
-    let lab_grad_raw = compute_lab_gradient(&data.lab_l, &data.lab_a, &data.lab_b, w as usize, h as usize);
+    let lab_grad_raw = compute_lab_gradient(
+        &data.lab_l,
+        &data.lab_a,
+        &data.lab_b,
+        w as usize,
+        h as usize,
+    );
     let lab_grad_norm = percentile_normalize(&lab_grad_raw, p_low, p_high);
     save_gray_png(&lab_grad_norm, w, h, &out_dir.join("lab_gradient.png"))?;
     let t_lab = t0.elapsed();
@@ -184,7 +198,11 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
     // ── (3) 频谱残差显著性 ──
     let t0 = std::time::Instant::now();
     let sr_raw = compute_spectral_residual(
-        &data.lab_l, &data.lab_a, &data.lab_b, w as usize, h as usize,
+        &data.lab_l,
+        &data.lab_a,
+        &data.lab_b,
+        w as usize,
+        h as usize,
         params.spectral_residual.mean_filter_kernel,
         params.spectral_residual.gaussian_sigma,
         params.spectral_residual.gamma,
@@ -239,12 +257,27 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
     // ── (8+9) Background features (三阶段管线: 色域切分 + BFS + 软 mask) ──
     let t0 = std::time::Instant::now();
     let (bg_mask_raw, bg_fg_raw) = compute_background_features(
-        &data.lab_l, &data.lab_a, &data.lab_b, w, h, &params.background,
+        &data.lab_l,
+        &data.lab_a,
+        &data.lab_b,
+        w,
+        h,
+        &params.background,
     );
-    let bg_mask_norm = percentile_normalize(&bg_mask_raw, p_low, p_high);
-    let bg_fg_norm = percentile_normalize(&bg_fg_raw, p_low, p_high);
-    save_gray_png(&bg_mask_norm, w, h, &out_dir.join("background_mask_morph.png"))?;
-    save_gray_png(&bg_fg_norm, w, h, &out_dir.join("background_fg_confidence.png"))?;
+    let bg_mask_norm = percentile_normalize_unit_feature(&bg_mask_raw, p_low, p_high);
+    let bg_fg_norm = percentile_normalize_unit_feature(&bg_fg_raw, p_low, p_high);
+    save_gray_png(
+        &bg_mask_norm,
+        w,
+        h,
+        &out_dir.join("background_mask_morph.png"),
+    )?;
+    save_gray_png(
+        &bg_fg_norm,
+        w,
+        h,
+        &out_dir.join("background_fg_confidence.png"),
+    )?;
     let t_bg = t0.elapsed();
 
     // ── (10) Subject Prior ──
@@ -304,8 +337,14 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
     let mul_w = weights_to_array(&params.weights_mul);
 
     // ── Hybrid Fusion ──
-    let (fused_add, fused_mul, fused_hybrid) =
-        hybrid_fusion(&features, &add_w, &mul_w, params.fusion.alpha, params.fusion.gamma, params.fusion.epsilon);
+    let (fused_add, fused_mul, fused_hybrid) = hybrid_fusion(
+        &features,
+        &add_w,
+        &mul_w,
+        params.fusion.alpha,
+        params.fusion.gamma,
+        params.fusion.epsilon,
+    );
 
     save_gray_png(&fused_add, w, h, &out_dir.join("fused_add.png"))?;
     save_gray_png(&fused_mul, w, h, &out_dir.join("fused_softmul.png"))?;
@@ -324,19 +363,45 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
     };
 
     if params.filter.is_some() {
-        save_gray_png(&fused_add_filt, w, h, &out_dir.join("fused_add_filtered.png"))?;
-        save_gray_png(&fused_mul_filt, w, h, &out_dir.join("fused_softmul_filtered.png"))?;
-        save_gray_png(&fused_hyb_filt, w, h, &out_dir.join("fused_hybrid_filtered.png"))?;
+        save_gray_png(
+            &fused_add_filt,
+            w,
+            h,
+            &out_dir.join("fused_add_filtered.png"),
+        )?;
+        save_gray_png(
+            &fused_mul_filt,
+            w,
+            h,
+            &out_dir.join("fused_softmul_filtered.png"),
+        )?;
+        save_gray_png(
+            &fused_hyb_filt,
+            w,
+            h,
+            &out_dir.join("fused_hybrid_filtered.png"),
+        )?;
     }
 
     // ── Original × FiltHybrid 复合图 ──
     let composite_rgb = composite_with_hybrid(&data.rgb, &fused_hyb_filt);
-    save_rgb_png(&composite_rgb, w, h, &out_dir.join("fused_original_hybrid.png"))?;
+    save_rgb_png(
+        &composite_rgb,
+        w,
+        h,
+        &out_dir.join("fused_original_hybrid.png"),
+    )?;
 
     // ── 印象色：k-means++ 聚类，取最大簇 ──
+    let impression_color = kmeans_impression_color(
+        &data.rgb,
+        &fused_hyb_filt,
+        w as usize,
+        h as usize,
+        &params.impression,
+    );
     let k = params.impression.k;
     let max_iter = params.impression.max_iter;
-    let impression_color = kmeans_impression_color(&data.rgb, &fused_hyb_filt, k, max_iter);
     let ic_hex = format!(
         "#{:02x}{:02x}{:02x}",
         (impression_color[0].clamp(0.0, 1.0) * 255.0) as u8,
@@ -346,7 +411,11 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
     println!("    impression color: {ic_hex} (k-means cluster, k={k}, iter={max_iter})");
 
     // ── Contact Sheet ──
-    let feat_slices: Vec<(&str, &[f64])> = feature_names.iter().zip(features.iter()).map(|(&n, &f)| (n, f)).collect();
+    let feat_slices: Vec<(&str, &[f64])> = feature_names
+        .iter()
+        .zip(features.iter())
+        .map(|(&n, &f)| (n, f))
+        .collect();
     let fused_slices: [(&str, &[f64]); 6] = [
         ("fused_add", &fused_add),
         ("fused_softmul", &fused_mul),
@@ -356,7 +425,9 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
         ("fused_hybrid_filtered", &fused_hyb_filt),
     ];
 
-    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+    let ts = chrono::Local::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
 
     make_contact_sheet_full(
         &data.rgb,

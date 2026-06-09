@@ -8,7 +8,7 @@
 
 use std::collections::VecDeque;
 
-use crate::params::{BackgroundParams, SubjectPriorParams};
+use crate::params::{BackgroundParams, SoftMaskParams, SubjectPriorParams};
 
 // =============================================================================
 // Phase 1: Color Partition via Median Cut
@@ -30,7 +30,9 @@ struct Cluster {
 
 /// 递归 Median Cut 切分 LAB 空间
 fn median_cut_partition(
-    lab_l: &[f64], lab_a: &[f64], lab_b: &[f64],
+    lab_l: &[f64],
+    lab_a: &[f64],
+    lab_b: &[f64],
     indices: Vec<usize>,
     depth: usize,
     max_depth: usize,
@@ -49,9 +51,14 @@ fn median_cut_partition(
     let total_var = var_l + var_a + var_b;
     if total_var < variance_threshold {
         clusters.push(Cluster {
-            pixels: vec![], indices,
-            mean_l, mean_a, mean_b,
-            var_l, var_a, var_b,
+            pixels: vec![],
+            indices,
+            mean_l,
+            mean_a,
+            mean_b,
+            var_l,
+            var_a,
+            var_b,
             bg_score: 0.0,
         });
         return;
@@ -83,7 +90,8 @@ fn median_cut_partition(
         }
     }
 
-    if left.is_empty() || right.is_empty()
+    if left.is_empty()
+        || right.is_empty()
         || left.len() as f64 / (left.len() + right.len()) as f64 > 0.95
         || right.len() as f64 / (left.len() + right.len()) as f64 > 0.95
     {
@@ -91,26 +99,60 @@ fn median_cut_partition(
         return;
     }
 
-    median_cut_partition(lab_l, lab_a, lab_b, left, depth + 1, max_depth, variance_threshold, clusters);
-    median_cut_partition(lab_l, lab_a, lab_b, right, depth + 1, max_depth, variance_threshold, clusters);
+    median_cut_partition(
+        lab_l,
+        lab_a,
+        lab_b,
+        left,
+        depth + 1,
+        max_depth,
+        variance_threshold,
+        clusters,
+    );
+    median_cut_partition(
+        lab_l,
+        lab_a,
+        lab_b,
+        right,
+        depth + 1,
+        max_depth,
+        variance_threshold,
+        clusters,
+    );
 }
 
-fn build_cluster(
-    lab_l: &[f64], lab_a: &[f64], lab_b: &[f64],
-    indices: Vec<usize>,
-) -> Cluster {
+fn build_cluster(lab_l: &[f64], lab_a: &[f64], lab_b: &[f64], indices: Vec<usize>) -> Cluster {
     let (mean_l, var_l) = mean_var_sel(lab_l, &indices);
     let (mean_a, var_a) = mean_var_sel(lab_a, &indices);
     let (mean_b, var_b) = mean_var_sel(lab_b, &indices);
-    Cluster { pixels: vec![], indices, mean_l, mean_a, mean_b, var_l, var_a, var_b, bg_score: 0.0 }
+    Cluster {
+        pixels: vec![],
+        indices,
+        mean_l,
+        mean_a,
+        mean_b,
+        var_l,
+        var_a,
+        var_b,
+        bg_score: 0.0,
+    }
 }
 
 fn mean_var_sel(data: &[f64], indices: &[usize]) -> (f64, f64) {
-    if indices.is_empty() { return (0.0, 0.0); }
+    if indices.is_empty() {
+        return (0.0, 0.0);
+    }
     let n = indices.len() as f64;
     let sum: f64 = indices.iter().map(|&i| data[i]).sum();
     let mean = sum / n;
-    let var: f64 = indices.iter().map(|&i| { let d = data[i] - mean; d * d }).sum::<f64>() / n;
+    let var: f64 = indices
+        .iter()
+        .map(|&i| {
+            let d = data[i] - mean;
+            d * d
+        })
+        .sum::<f64>()
+        / n;
     (mean, var)
 }
 
@@ -122,7 +164,9 @@ fn median_value(data: &[f64], indices: &[usize]) -> f64 {
 
 /// Simple median for robust center estimation
 fn robust_center(data: &[f64]) -> f64 {
-    if data.is_empty() { return 0.0; }
+    if data.is_empty() {
+        return 0.0;
+    }
     let mut sorted = data.to_vec();
     sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
     sorted[sorted.len() / 2]
@@ -131,35 +175,60 @@ fn robust_center(data: &[f64]) -> f64 {
 /// 对每个簇计算背景分数: 边界比例 + 距边界 LAB 中心距离
 fn score_clusters(
     clusters: &mut [Cluster],
-    lab_l: &[f64], lab_a: &[f64], lab_b: &[f64],
-    w: u32, h: u32, border_band: u32,
+    lab_l: &[f64],
+    lab_a: &[f64],
+    lab_b: &[f64],
+    w: u32,
+    h: u32,
+    border_band: u32,
 ) {
     let n_pixels = (w * h) as usize;
-    if n_pixels == 0 { return; }
+    if n_pixels == 0 {
+        return;
+    }
 
     let band = border_band.max(1);
 
     // 标记边界像素
     let mut border_mask = vec![false; n_pixels];
     for y in 0..band.min(h) {
-        for x in 0..w { border_mask[(y * w + x) as usize] = true; }
+        for x in 0..w {
+            border_mask[(y * w + x) as usize] = true;
+        }
     }
     for y in (h.saturating_sub(band))..h {
-        for x in 0..w { border_mask[(y * w + x) as usize] = true; }
+        for x in 0..w {
+            border_mask[(y * w + x) as usize] = true;
+        }
     }
     for y in band..h.saturating_sub(band) {
-        for x in 0..band.min(w) { border_mask[(y * w + x) as usize] = true; }
+        for x in 0..band.min(w) {
+            border_mask[(y * w + x) as usize] = true;
+        }
     }
     for y in band..h.saturating_sub(band) {
-        for x in (w.saturating_sub(band))..w { border_mask[(y * w + x) as usize] = true; }
+        for x in (w.saturating_sub(band))..w {
+            border_mask[(y * w + x) as usize] = true;
+        }
     }
 
     // 边界 LAB 值列表
-    let border_l: Vec<f64> = (0..n_pixels).filter(|&i| border_mask[i]).map(|i| lab_l[i]).collect();
-    let border_a: Vec<f64> = (0..n_pixels).filter(|&i| border_mask[i]).map(|i| lab_a[i]).collect();
-    let border_b: Vec<f64> = (0..n_pixels).filter(|&i| border_mask[i]).map(|i| lab_b[i]).collect();
+    let border_l: Vec<f64> = (0..n_pixels)
+        .filter(|&i| border_mask[i])
+        .map(|i| lab_l[i])
+        .collect();
+    let border_a: Vec<f64> = (0..n_pixels)
+        .filter(|&i| border_mask[i])
+        .map(|i| lab_a[i])
+        .collect();
+    let border_b: Vec<f64> = (0..n_pixels)
+        .filter(|&i| border_mask[i])
+        .map(|i| lab_b[i])
+        .collect();
 
-    if border_l.is_empty() { return; }
+    if border_l.is_empty() {
+        return;
+    }
 
     let bg_l = robust_center(&border_l);
     let bg_a = robust_center(&border_a);
@@ -187,7 +256,11 @@ fn score_clusters(
 fn clusters_to_bg_mask(clusters: &[Cluster], n_pixels: usize, threshold: f64) -> Vec<f64> {
     let mut mask = vec![0.0; n_pixels];
     for cluster in clusters {
-        let v = if cluster.bg_score >= threshold { 1.0 } else { 0.0 };
+        let v = if cluster.bg_score >= threshold {
+            1.0
+        } else {
+            0.0
+        };
         for &idx in &cluster.indices {
             mask[idx] = v;
         }
@@ -199,12 +272,16 @@ fn clusters_to_bg_mask(clusters: &[Cluster], n_pixels: usize, threshold: f64) ->
 
 fn merge_small_clusters(
     clusters: &mut Vec<Cluster>,
-    lab_l: &[f64], lab_a: &[f64], lab_b: &[f64],
+    lab_l: &[f64],
+    lab_a: &[f64],
+    lab_b: &[f64],
     min_cluster_area_ratio: f64,
 ) {
     let total = lab_l.len();
     let min_area = (total as f64 * min_cluster_area_ratio) as usize;
-    if min_area < 2 { return; }
+    if min_area < 2 {
+        return;
+    }
 
     let mut i = 0;
     while i < clusters.len() {
@@ -212,12 +289,17 @@ fn merge_small_clusters(
             let mut best_j = None;
             let mut best_dist = f64::MAX;
             for j in 0..clusters.len() {
-                if j == i || clusters[j].indices.len() < min_area { continue; }
+                if j == i || clusters[j].indices.len() < min_area {
+                    continue;
+                }
                 let d_l = (clusters[i].mean_l - clusters[j].mean_l) / 100.0;
                 let d_a = (clusters[i].mean_a - clusters[j].mean_a) / 128.0;
                 let d_b = (clusters[i].mean_b - clusters[j].mean_b) / 128.0;
                 let dist = d_l * d_l + d_a * d_a + d_b * d_b;
-                if dist < best_dist { best_dist = dist; best_j = Some(j); }
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_j = Some(j);
+                }
             }
             if let Some(j) = best_j {
                 let mut cluster_i = clusters.remove(i);
@@ -235,7 +317,9 @@ fn merge_small_clusters(
 
 fn reduce_cluster_count(
     clusters: &mut Vec<Cluster>,
-    lab_l: &[f64], lab_a: &[f64], lab_b: &[f64],
+    lab_l: &[f64],
+    lab_a: &[f64],
+    lab_b: &[f64],
     max_clusters: usize,
 ) {
     let max_clusters = max_clusters.max(1);
@@ -245,20 +329,29 @@ fn reduce_cluster_count(
             .enumerate()
             .min_by_key(|(_, c)| c.indices.len())
             .map(|(i, _)| i)
-        else { return; };
+        else {
+            return;
+        };
 
         let mut best_j = None;
         let mut best_dist = f64::MAX;
         for (j, c) in clusters.iter().enumerate() {
-            if j == small_i { continue; }
+            if j == small_i {
+                continue;
+            }
             let d_l = (clusters[small_i].mean_l - c.mean_l) / 100.0;
             let d_a = (clusters[small_i].mean_a - c.mean_a) / 128.0;
             let d_b = (clusters[small_i].mean_b - c.mean_b) / 128.0;
             let dist = d_l * d_l + d_a * d_a + d_b * d_b;
-            if dist < best_dist { best_dist = dist; best_j = Some(j); }
+            if dist < best_dist {
+                best_dist = dist;
+                best_j = Some(j);
+            }
         }
 
-        let Some(best_j) = best_j else { return; };
+        let Some(best_j) = best_j else {
+            return;
+        };
         let mut small = clusters.remove(small_i);
         let target_i = if best_j > small_i { best_j - 1 } else { best_j };
         clusters[target_i].indices.append(&mut small.indices);
@@ -285,12 +378,19 @@ fn recompute_cluster_stats(cluster: &mut Cluster, lab_l: &[f64], lab_a: &[f64], 
 /// BFS flood-fill 从边界扩散，连通区域标记为背景
 fn bfs_connected_bg(
     raw_mask: &[f64],
-    lab_l: &[f64], lab_a: &[f64], lab_b: &[f64],
-    w: u32, h: u32,
-    border_band: u32, bg_score_threshold: f64, bg_connect_threshold: f64,
+    lab_l: &[f64],
+    lab_a: &[f64],
+    lab_b: &[f64],
+    w: u32,
+    h: u32,
+    border_band: u32,
+    bg_score_threshold: f64,
+    bg_connect_threshold: f64,
 ) -> Vec<f64> {
     let n = (w * h) as usize;
-    if n == 0 { return vec![]; }
+    if n == 0 {
+        return vec![];
+    }
 
     let band = border_band.max(1);
     let score_threshold = bg_score_threshold;
@@ -305,7 +405,9 @@ fn bfs_connected_bg(
         for x in 0..w {
             let i = (y * w + x) as usize;
             if raw_mask[i] >= score_threshold {
-                visited[i] = true; mask[i] = 1.0; queue.push_back((x, y));
+                visited[i] = true;
+                mask[i] = 1.0;
+                queue.push_back((x, y));
             }
         }
     }
@@ -314,7 +416,9 @@ fn bfs_connected_bg(
         for x in 0..w {
             let i = (y * w + x) as usize;
             if !visited[i] && raw_mask[i] >= score_threshold {
-                visited[i] = true; mask[i] = 1.0; queue.push_back((x, y));
+                visited[i] = true;
+                mask[i] = 1.0;
+                queue.push_back((x, y));
             }
         }
     }
@@ -323,13 +427,17 @@ fn bfs_connected_bg(
         for x in 0..band.min(w) {
             let i = (y * w + x) as usize;
             if !visited[i] && raw_mask[i] >= score_threshold {
-                visited[i] = true; mask[i] = 1.0; queue.push_back((x, y));
+                visited[i] = true;
+                mask[i] = 1.0;
+                queue.push_back((x, y));
             }
         }
         for x in (w.saturating_sub(band))..w {
             let i = (y * w + x) as usize;
             if !visited[i] && raw_mask[i] >= score_threshold {
-                visited[i] = true; mask[i] = 1.0; queue.push_back((x, y));
+                visited[i] = true;
+                mask[i] = 1.0;
+                queue.push_back((x, y));
             }
         }
     }
@@ -343,9 +451,13 @@ fn bfs_connected_bg(
         for (dx, dy) in &[(0i32, -1i32), (0, 1), (-1, 0), (1, 0)] {
             let nx = cx as i32 + dx;
             let ny = cy as i32 + dy;
-            if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 { continue; }
+            if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                continue;
+            }
             let ni = (ny as u32 * w + nx as u32) as usize;
-            if visited[ni] { continue; }
+            if visited[ni] {
+                continue;
+            }
             let d_l = (lab_l[ni] - cl) / 100.0;
             let d_a = (lab_a[ni] - ca) / 128.0;
             let d_b = (lab_b[ni] - cb) / 128.0;
@@ -374,7 +486,9 @@ fn erode(mask: &[f64], w: u32, h: u32, radius: u32) -> Vec<f64> {
                 for dx in -r..=r {
                     let px = x as i32 + dx;
                     let py = y as i32 + dy;
-                    if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 { continue; }
+                    if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 {
+                        continue;
+                    }
                     if mask[(py as u32 * w + px as u32) as usize] < 0.5 {
                         all_bg = false;
                         break 'outer;
@@ -398,7 +512,9 @@ fn dilate(mask: &[f64], w: u32, h: u32, radius: u32) -> Vec<f64> {
                 for dx in -r..=r {
                     let px = x as i32 + dx;
                     let py = y as i32 + dy;
-                    if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 { continue; }
+                    if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 {
+                        continue;
+                    }
                     if mask[(py as u32 * w + px as u32) as usize] >= 0.5 {
                         any_bg = true;
                         break 'outer;
@@ -422,7 +538,9 @@ fn closing(mask: &[f64], w: u32, h: u32, radius: u32) -> Vec<f64> {
 }
 
 fn mask_mean(mask: &[f64]) -> f64 {
-    if mask.is_empty() { return 0.0; }
+    if mask.is_empty() {
+        return 0.0;
+    }
     mask.iter().sum::<f64>() / mask.len() as f64
 }
 
@@ -432,13 +550,20 @@ fn mask_mean(mask: &[f64]) -> f64 {
 
 /// 基于边界采样原型的背景相似度（颜色距离 → Gaussian 衰减）
 fn border_background_likelihood(
-    lab_l: &[f64], lab_a: &[f64], lab_b: &[f64],
-    w: u32, h: u32, border_band: u32,
+    lab_l: &[f64],
+    lab_a: &[f64],
+    lab_b: &[f64],
+    w: u32,
+    h: u32,
+    border_band: u32,
+    soft_mask: &SoftMaskParams,
 ) -> Vec<f64> {
     let wu = w as usize;
     let hu = h as usize;
     let n = wu.saturating_mul(hu);
-    if n == 0 { return Vec::new(); }
+    if n == 0 {
+        return Vec::new();
+    }
 
     let band = (border_band as usize).max(1).min(wu.max(1)).min(hu.max(1));
     let mut border_indices = Vec::new();
@@ -449,7 +574,9 @@ fn border_background_likelihood(
             }
         }
     }
-    if border_indices.is_empty() { return vec![0.0; n]; }
+    if border_indices.is_empty() {
+        return vec![0.0; n];
+    }
 
     let max_prototypes = 96usize;
     let step = (border_indices.len() / max_prototypes).max(1);
@@ -470,7 +597,9 @@ fn border_background_likelihood(
                 let d_a = (lab_a[i] - lab_a[p]) / 128.0;
                 let d_b = (lab_b[i] - lab_b[p]) / 128.0;
                 let d = (d_l * d_l + d_a * d_a + d_b * d_b).sqrt();
-                if d < best { best = d; }
+                if d < best {
+                    best = d;
+                }
             }
             let color_bg = (-(best / 0.16).powi(2)).exp();
             // NOTE: use 1.0 as edge_bg placeholder (no center_prior call here)
@@ -479,18 +608,36 @@ fn border_background_likelihood(
         }
     }
 
-    let radius = ((wu.min(hu) / 48).clamp(4, 16)) as usize;
+    let radius = blur_radius(wu.min(hu), soft_mask.border_bg_blur_radius, 48, 4, 16);
     box_blur_mask(&bg, wu, hu, radius)
 }
 
 /// Gaussian center bias (subject prior)
 fn subject_prior(x: usize, y: usize, w: usize, h: usize, params: &SubjectPriorParams) -> f64 {
-    if w == 0 || h == 0 { return 0.0; }
+    if w == 0 || h == 0 {
+        return 0.0;
+    }
     let nx = (x as f64 + 0.5) / w as f64;
     let ny = (y as f64 + 0.5) / h as f64;
     let dx = (nx - params.center_x) / params.radius_x.max(1e-6);
     let dy = (ny - params.center_y) / params.radius_y.max(1e-6);
     (-(dx * dx + dy * dy)).exp().clamp(0.0, 1.0)
+}
+
+/// Compute box blur radius: if `fixed > 0`, use it directly.
+/// Otherwise use adaptive formula: clamp(min(w,h)/divisor, min_clamp, max_clamp)
+fn blur_radius(
+    image_short_side: usize,
+    fixed: u32,
+    divisor: usize,
+    min_clamp: usize,
+    max_clamp: usize,
+) -> usize {
+    if fixed > 0 {
+        fixed as usize
+    } else {
+        (image_short_side / divisor).clamp(min_clamp, max_clamp)
+    }
 }
 
 /// Separable box blur via prefix sums, O(1) per pixel
@@ -537,7 +684,9 @@ fn weighted3(a: f64, aw: f64, b: f64, bw: f64, c: f64, cw: f64) -> f64 {
     let bw = bw.max(0.0);
     let cw = cw.max(0.0);
     let sum = aw + bw + cw;
-    if sum < 1e-12 { return 0.0; }
+    if sum < 1e-12 {
+        return 0.0;
+    }
     ((a * aw + b * bw + c * cw) / sum).clamp(0.0, 1.0)
 }
 
@@ -547,28 +696,39 @@ struct MaskStats {
 }
 
 fn mask_stats(mask: &[f64]) -> MaskStats {
-    if mask.is_empty() { return MaskStats { mean: 0.0, unique_values: 0 }; }
+    if mask.is_empty() {
+        return MaskStats {
+            mean: 0.0,
+            unique_values: 0,
+        };
+    }
     let mean = mask.iter().sum::<f64>() / mask.len() as f64;
     let mut seen = Vec::new();
     for &v in mask {
         let q = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
         if !seen.contains(&q) {
             seen.push(q);
-            if seen.len() > 2 { break; }
+            if seen.len() > 2 {
+                break;
+            }
         }
     }
-    MaskStats { mean, unique_values: seen.len() }
+    MaskStats {
+        mean,
+        unique_values: seen.len(),
+    }
 }
 
 /// Blend hard partition mask with soft border-background likelihood
 fn soft_background_from_partition(mask: &[f64], border_bg: &[f64]) -> Vec<f64> {
     let stats = mask_stats(mask);
-    let partition_weight = if stats.unique_values <= 2 && (stats.mean <= 0.02 || stats.mean >= 0.98) {
+    let partition_weight = if stats.unique_values <= 2 && (stats.mean <= 0.02 || stats.mean >= 0.98)
+    {
         0.0
     } else if stats.unique_values <= 2 {
-        0.40
+        0.08
     } else {
-        0.55
+        0.15
     };
     mask.iter()
         .zip(border_bg.iter())
@@ -579,8 +739,10 @@ fn soft_background_from_partition(mask: &[f64], border_bg: &[f64]) -> Vec<f64> {
 /// Compute foreground confidence from background: color_fg blended with saliency + subject_prior
 fn soft_foreground_from_background(
     bg: &[f64],
-    w: u32, h: u32,
+    w: u32,
+    h: u32,
     subject_prior_map: &[f64],
+    soft_mask: &SoftMaskParams,
 ) -> Vec<f64> {
     const FG_COLOR_W: f64 = 0.45;
     const FG_SALIENCY_W: f64 = 0.15;
@@ -597,14 +759,17 @@ fn soft_foreground_from_background(
             let i = y * wu + x;
             let color_fg = 1.0 - bg[i];
             fg[i] = weighted3(
-                color_fg, FG_COLOR_W,
-                saliency_fg, FG_SALIENCY_W,
-                subject_prior_map[i], FG_SUBJECT_W,
+                color_fg,
+                FG_COLOR_W,
+                saliency_fg,
+                FG_SALIENCY_W,
+                subject_prior_map[i],
+                FG_SUBJECT_W,
             );
         }
     }
 
-    let radius = ((w.min(h) as usize / 40).clamp(6, 24)) as usize;
+    let radius = blur_radius(wu.min(hu), soft_mask.fg_confidence_blur_radius, 40, 6, 24);
     let blurred = box_blur_mask(&fg, wu, hu, radius);
 
     // Percentile normalize to [0, 1]
@@ -613,7 +778,9 @@ fn soft_foreground_from_background(
 
 /// Local percentile normalization (same logic as fusion::percentile_normalize)
 fn percentile_normalize_local(data: &[f64], p_low: f64, p_high: f64) -> Vec<f64> {
-    if data.is_empty() { return Vec::new(); }
+    if data.is_empty() {
+        return Vec::new();
+    }
     let mut sorted = data.to_vec();
     sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
     let n = sorted.len();
@@ -634,8 +801,11 @@ fn percentile_normalize_local(data: &[f64], p_low: f64, p_high: f64) -> Vec<f64>
 /// Compute background mask (morph) and foreground confidence.
 /// Returns (bg_mask_morph, fg_confidence) — both express "foregroundness" (high = foreground).
 pub fn compute_background_features(
-    lab_l: &[f64], lab_a: &[f64], lab_b: &[f64],
-    w: u32, h: u32,
+    lab_l: &[f64],
+    lab_a: &[f64],
+    lab_b: &[f64],
+    w: u32,
+    h: u32,
     params: &BackgroundParams,
 ) -> (Vec<f64>, Vec<f64>) {
     let n = (w * h) as usize;
@@ -655,22 +825,48 @@ pub fn compute_background_features(
     let all_indices: Vec<usize> = (0..n).collect();
     let mut clusters: Vec<Cluster> = Vec::new();
     median_cut_partition(
-        lab_l, lab_a, lab_b, all_indices, 0,
-        partition.max_depth, partition.variance_threshold,
+        lab_l,
+        lab_a,
+        lab_b,
+        all_indices,
+        0,
+        partition.max_depth,
+        partition.variance_threshold,
         &mut clusters,
     );
 
-    merge_small_clusters(&mut clusters, lab_l, lab_a, lab_b, partition.min_cluster_area_ratio);
+    merge_small_clusters(
+        &mut clusters,
+        lab_l,
+        lab_a,
+        lab_b,
+        partition.min_cluster_area_ratio,
+    );
     reduce_cluster_count(&mut clusters, lab_l, lab_a, lab_b, partition.max_clusters);
 
     // Score clusters
-    score_clusters(&mut clusters, lab_l, lab_a, lab_b, w, h, partition.border_band);
+    score_clusters(
+        &mut clusters,
+        lab_l,
+        lab_a,
+        lab_b,
+        w,
+        h,
+        partition.border_band,
+    );
 
     // Phase 2: Generate mask → BFS → morphology
     let raw_mask = clusters_to_bg_mask(&clusters, n, partition.bg_score_threshold);
     let bfs_mask = bfs_connected_bg(
-        &raw_mask, lab_l, lab_a, lab_b, w, h,
-        partition.border_band, partition.bg_score_threshold, partition.bg_connect_threshold,
+        &raw_mask,
+        lab_l,
+        lab_a,
+        lab_b,
+        w,
+        h,
+        partition.border_band,
+        partition.bg_score_threshold,
+        partition.bg_connect_threshold,
     );
 
     // max_bg_ratio guard: if too much is bg, fall back to raw_mask
@@ -685,7 +881,9 @@ pub fn compute_background_features(
         let closed = closing(&connected_mask, w, h, morph.close_radius);
         if morph.open_radius > 0 {
             opening(&closed, w, h, morph.open_radius)
-        } else { closed }
+        } else {
+            closed
+        }
     } else if morph.open_radius > 0 {
         opening(&connected_mask, w, h, morph.open_radius)
     } else {
@@ -706,7 +904,15 @@ pub fn compute_background_features(
     };
 
     // Phase 3: Soft mask refinement
-    let border_bg = border_background_likelihood(lab_l, lab_a, lab_b, w, h, partition.border_band);
+    let border_bg = border_background_likelihood(
+        lab_l,
+        lab_a,
+        lab_b,
+        w,
+        h,
+        partition.border_band,
+        &params.soft_mask,
+    );
 
     // Blend hard morph mask with soft border_bg
     let soft_bg = soft_background_from_partition(&morph_mask, &border_bg);
@@ -721,21 +927,34 @@ pub fn compute_background_features(
         })
         .collect();
 
-    let fg_confidence = soft_foreground_from_background(&soft_bg, w, h, &subject_map);
+    let fg_confidence =
+        soft_foreground_from_background(&soft_bg, w, h, &subject_map, &params.soft_mask);
 
-    // Invert morph mask to foreground orientation (high = foreground)
-    let bg_mask_morph: Vec<f64> = morph_mask.iter().map(|&v| 1.0 - v).collect();
+    // Use the edge-friendly soft foreground map as the foreground-oriented mask feature.
+    // 硬 mask 仅参与软背景估计的弱先验；直接输出它会把 Median Cut 的块状边界带到汇总图。
+    let morph_stats = mask_stats(&morph_mask);
+    let bg_mask_morph: Vec<f64> = if morph_stats.mean <= 0.02 || morph_stats.mean >= 0.98 {
+        fg_confidence.clone()
+    } else {
+        morph_mask
+            .iter()
+            .zip(fg_confidence.iter())
+            .map(|(&m, &f)| {
+                let hard_fg = 1.0 - m;
+                (hard_fg * 0.20 + f * 0.80).clamp(0.0, 1.0)
+            })
+            .collect()
+    };
 
     (bg_mask_morph, fg_confidence)
 }
 
 /// Compute subject prior (Gaussian center bias) for every pixel.
-pub fn compute_subject_prior(
-    w: u32, h: u32,
-    params: &SubjectPriorParams,
-) -> Vec<f64> {
+pub fn compute_subject_prior(w: u32, h: u32, params: &SubjectPriorParams) -> Vec<f64> {
     let n = (w * h) as usize;
-    if n == 0 { return vec![]; }
+    if n == 0 {
+        return vec![];
+    }
     let wu = w as usize;
     let hu = h as usize;
     let mut out = Vec::with_capacity(n);

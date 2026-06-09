@@ -2,7 +2,7 @@
 // Percentile Normalize + Hybrid Fusion + Filter
 // =============================================================================
 
-use crate::params::{FilterParams, Weights};
+use crate::params::{FilterParams, ImpressionParams, Weights};
 
 /// Percentile 归一化到 [0,1]：低于 p_low% 置 0，高于 p_high% 置 1，中间线性拉伸
 pub fn percentile_normalize(data: &[f64], p_low: f64, p_high: f64) -> Vec<f64> {
@@ -23,13 +23,51 @@ pub fn percentile_normalize(data: &[f64], p_low: f64, p_high: f64) -> Vec<f64> {
         .collect()
 }
 
+/// 对已经是 [0,1] 语义的概率/掩膜特征做归一化。
+///
+/// 当百分位上下界重合时，普通 percentile normalize 会把全 1 前景 mask 映射成全 0。
+/// 这类特征的常量值本身有语义，因此退化时直接保留原值。
+pub fn percentile_normalize_unit_feature(data: &[f64], p_low: f64, p_high: f64) -> Vec<f64> {
+    if data.is_empty() {
+        return Vec::new();
+    }
+
+    let mut sorted = data.to_vec();
+    sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Less));
+    let n = sorted.len();
+    let lo_idx = ((n as f64) * p_low / 100.0).floor() as usize;
+    let hi_idx = ((n as f64) * p_high / 100.0).ceil() as usize;
+    let lo_val = sorted[lo_idx.min(n - 1)];
+    let hi_val = sorted[hi_idx.min(n - 1)];
+    let range = hi_val - lo_val;
+
+    let min_val = sorted[0];
+    let max_val = sorted[n - 1];
+    let already_unit = min_val >= -1e-9 && max_val <= 1.0 + 1e-9;
+    if range.abs() < 1e-12 && already_unit {
+        return data.iter().map(|&v| v.clamp(0.0, 1.0)).collect();
+    }
+
+    let range = range.max(1e-12);
+    data.iter()
+        .map(|&v| ((v - lo_val) / range).clamp(0.0, 1.0))
+        .collect()
+}
+
 /// 从 Params 中提取权重数组（长度 = feature 数量）
 pub fn weights_to_array(w: &Weights) -> Vec<f64> {
     vec![
-        w.dct, w.lab_grad, w.spectral,
-        w.global_light, w.global_lab_a, w.global_lab_b,
-        w.local_light, w.local_lab_a, w.local_lab_b,
-        w.background_mask_morph, w.background_fg_confidence,
+        w.dct,
+        w.lab_grad,
+        w.spectral,
+        w.global_light,
+        w.global_lab_a,
+        w.global_lab_b,
+        w.local_light,
+        w.local_lab_a,
+        w.local_lab_b,
+        w.background_mask_morph,
+        w.background_fg_confidence,
         w.subject_prior,
     ]
 }
@@ -110,10 +148,7 @@ pub fn hybrid_fusion(
 /// 将原图 RGB 与过滤后的 FuseHybrid 逐像素相乘，生成复合图。
 ///
 /// 复合图 = original × filtered_hybrid（非显著区域 → 0）。
-pub fn composite_with_hybrid(
-    rgb: &[[f64; 3]],
-    filtered: &[f64],
-) -> Vec<[f64; 3]> {
+pub fn composite_with_hybrid(rgb: &[[f64; 3]], filtered: &[f64]) -> Vec<[f64; 3]> {
     rgb.iter()
         .zip(filtered.iter())
         .map(|(&px, &w)| [px[0] * w, px[1] * w, px[2] * w])
@@ -132,7 +167,10 @@ impl Lcg64 {
         Self(seed.wrapping_add(1442695040888963407))
     }
     fn next_f64(&mut self) -> f64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (self.0 >> 11) as f64 * (1.0 / 9007199254740992.0)
     }
 }
@@ -147,20 +185,44 @@ fn sq_dist(a: &[f64; 3], b: &[f64; 3]) -> f64 {
 
 /// 使用 k-means++ 聚类从显著像素中提取印象色。
 ///
-/// 仅对 filtered > 0 的像素做聚类，k-means++ 初始化，Lloyd 迭代。
+/// 采样方式由 `impression.sample_method` 控制:
+///   - "stride": 间隔规律网格采样，按 sample_stride 在 2D 网格上每隔 stride 个像素选一个
+///   - "all":    使用全部 filtered > 0 的像素（旧行为）
+///
+/// k-means++ 初始化使用固定种子 `impression.seed`（默认 42），保证可复现。
 /// 返回像素数最多的簇的质心作为印象色。
 pub fn kmeans_impression_color(
     rgb: &[[f64; 3]],
     filtered: &[f64],
-    k: usize,
-    max_iter: usize,
+    w: usize,
+    h: usize,
+    params: &ImpressionParams,
 ) -> [f64; 3] {
-    // 收集非零像素点
-    let pts: Vec<[f64; 3]> = rgb.iter()
-        .zip(filtered.iter())
-        .filter(|&(_, &w)| w > 0.0)
-        .map(|(&c, _)| c)
-        .collect();
+    let k = params.k;
+    let max_iter = params.max_iter;
+
+    // ── 收集显著像素点 ──
+    let pts: Vec<[f64; 3]> = if params.sample_method == "stride" {
+        // 间隔规律网格采样: 每隔 stride 行/列取一个像素，仅取 filtered > 0 的
+        let stride = params.sample_stride.max(1);
+        let mut sampled = Vec::new();
+        for y in (0..h).step_by(stride) {
+            for x in (0..w).step_by(stride) {
+                let idx = y * w + x;
+                if filtered[idx] > 0.0 {
+                    sampled.push(rgb[idx]);
+                }
+            }
+        }
+        sampled
+    } else {
+        // "all" — 使用全部 filtered > 0 的像素
+        rgb.iter()
+            .zip(filtered.iter())
+            .filter(|&(_, &w)| w > 0.0)
+            .map(|(&c, _)| c)
+            .collect()
+    };
 
     let n = pts.len();
     if n == 0 {
@@ -169,16 +231,16 @@ pub fn kmeans_impression_color(
     if n <= k {
         // 点数不足 k，直接返回均值
         let mut s = [0.0; 3];
-        for &p in &pts { s[0] += p[0]; s[1] += p[1]; s[2] += p[2]; }
+        for &p in &pts {
+            s[0] += p[0];
+            s[1] += p[1];
+            s[2] += p[2];
+        }
         return [s[0] / n as f64, s[1] / n as f64, s[2] / n as f64];
     }
 
-    // ── K-means++ 初始化 ──
-    let seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default() as u64;
-    let mut rng = Lcg64::new(seed);
+    // ── K-means++ 初始化 ── 使用固定种子保证可复现
+    let mut rng = Lcg64::new(params.seed);
 
     let mut centroids = Vec::with_capacity(k);
     centroids.push(pts[rng.next_f64() as usize % n]);
@@ -188,7 +250,8 @@ pub fn kmeans_impression_color(
     for _ in 1..k {
         // 更新到最新质心的距离，并计算 D² 总和
         let last = &centroids[centroids.len() - 1];
-        let total: f64 = pts.iter()
+        let total: f64 = pts
+            .iter()
             .zip(min_d2.iter_mut())
             .map(|(p, md)| {
                 let d2 = sq_dist(p, last);
@@ -210,7 +273,10 @@ pub fn kmeans_impression_color(
         let mut idx = n - 1;
         for i in 0..n {
             r -= min_d2[i];
-            if r <= 0.0 { idx = i; break; }
+            if r <= 0.0 {
+                idx = i;
+                break;
+            }
         }
         centroids.push(pts[idx]);
     }
@@ -226,11 +292,19 @@ pub fn kmeans_impression_color(
             let mut best_d = sq_dist(&pts[i], &centroids[0]);
             for j in 1..k {
                 let d = sq_dist(&pts[i], &centroids[j]);
-                if d < best_d { best_d = d; best = j; }
+                if d < best_d {
+                    best_d = d;
+                    best = j;
+                }
             }
-            if assign[i] != best { assign[i] = best; changed = true; }
+            if assign[i] != best {
+                assign[i] = best;
+                changed = true;
+            }
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
 
         // Update: 重新计算质心
         let mut sums = vec![[0.0; 3]; k];
@@ -255,7 +329,9 @@ pub fn kmeans_impression_color(
 
     // 找最大簇
     let mut counts = vec![0u32; k];
-    for &a in &assign { counts[a] += 1; }
+    for &a in &assign {
+        counts[a] += 1;
+    }
     let best = (0..k).max_by_key(|&j| counts[j]).unwrap();
     centroids[best]
 }

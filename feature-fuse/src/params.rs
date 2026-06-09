@@ -87,10 +87,18 @@ pub struct RobustCenterParams {
     pub log_base: f64,
 }
 
-fn default_trimmed_mean_weight() -> f64 { 0.65 }
-fn default_median_weight() -> f64 { 0.35 }
-fn default_gamma_power() -> f64 { 0.5 }
-fn default_log_base() -> f64 { std::f64::consts::E }
+fn default_trimmed_mean_weight() -> f64 {
+    0.65
+}
+fn default_median_weight() -> f64 {
+    0.35
+}
+fn default_gamma_power() -> f64 {
+    0.5
+}
+fn default_log_base() -> f64 {
+    std::f64::consts::E
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]
@@ -106,7 +114,9 @@ pub struct SpectralResidualParams {
     pub post_gamma: f64,
 }
 
-fn default_one() -> f64 { 1.0 }
+fn default_one() -> f64 {
+    1.0
+}
 
 impl Default for SpectralResidualParams {
     fn default() -> Self {
@@ -166,11 +176,23 @@ pub struct ImpressionParams {
     pub k: usize,
     /// 最大迭代次数
     pub max_iter: usize,
+    /// 采样方式: "stride" — 间隔规律网格采样, "all" — 使用全部显著像素
+    pub sample_method: String,
+    /// 网格采样步长 (仅 sample_method="stride" 时生效)
+    pub sample_stride: usize,
+    /// K-Means++ 初始化随机数种子 (固定可保证结果可复现)
+    pub seed: u64,
 }
 
 impl Default for ImpressionParams {
     fn default() -> Self {
-        Self { k: 4, max_iter: 10 }
+        Self {
+            k: 4,
+            max_iter: 10,
+            sample_method: "stride".to_string(),
+            sample_stride: 4,
+            seed: 42,
+        }
     }
 }
 
@@ -178,12 +200,40 @@ impl Default for ImpressionParams {
 // Background 参数（三阶段管线: 色域切分 + BFS 连通 + 软 mask）
 // =============================================================================
 
+/// Phase 3 软 mask 精炼参数（box blur 控制）
+#[derive(Debug, Deserialize)]
+pub struct SoftMaskParams {
+    /// Phase 3 边界背景似然图的 box blur 半径。
+    /// 0 = 自适应（基于图像边长: clamp(min(w,h)/48, 4, 16)）。>0 = 固定像素半径。
+    #[serde(default = "default_soft_blur")]
+    pub border_bg_blur_radius: u32,
+    /// Phase 3 前景置信度图的 box blur 半径。
+    /// 0 = 自适应（基于图像边长: clamp(min(w,h)/40, 6, 24)）。>0 = 固定像素半径。
+    #[serde(default = "default_soft_blur")]
+    pub fg_confidence_blur_radius: u32,
+}
+
+impl Default for SoftMaskParams {
+    fn default() -> Self {
+        Self {
+            border_bg_blur_radius: 0,
+            fg_confidence_blur_radius: 0,
+        }
+    }
+}
+
+fn default_soft_blur() -> u32 {
+    0
+}
+
 #[derive(Debug, Deserialize)]
 pub struct BackgroundParams {
     #[serde(default)]
     pub partition: ColorPartitionParams,
     #[serde(default)]
     pub morphology: MorphologyParams,
+    #[serde(default)]
+    pub soft_mask: SoftMaskParams,
 }
 
 #[derive(Debug, Deserialize)]
@@ -224,18 +274,42 @@ impl Default for ColorPartitionParams {
     }
 }
 
-fn default_true() -> bool { true }
-fn default_max_depth() -> usize { 5 }
-fn default_max_clusters() -> usize { 16 }
-fn default_variance_threshold() -> f64 { 0.1 }
-fn default_min_cluster_area_ratio() -> f64 { 0.01 }
-fn default_border_band() -> u32 { 3 }
-fn default_bg_score_threshold() -> f64 { 0.55 }
-fn default_bg_connect_threshold() -> f64 { 0.08 }
-fn default_max_bg_ratio() -> f64 { 0.85 }
-fn default_open_radius() -> u32 { 2 }
-fn default_close_radius() -> u32 { 8 }
-fn default_erode_radius() -> u32 { 3 }
+fn default_true() -> bool {
+    true
+}
+fn default_max_depth() -> usize {
+    5
+}
+fn default_max_clusters() -> usize {
+    16
+}
+fn default_variance_threshold() -> f64 {
+    0.1
+}
+fn default_min_cluster_area_ratio() -> f64 {
+    0.01
+}
+fn default_border_band() -> u32 {
+    3
+}
+fn default_bg_score_threshold() -> f64 {
+    0.55
+}
+fn default_bg_connect_threshold() -> f64 {
+    0.08
+}
+fn default_max_bg_ratio() -> f64 {
+    0.85
+}
+fn default_open_radius() -> u32 {
+    2
+}
+fn default_close_radius() -> u32 {
+    8
+}
+fn default_erode_radius() -> u32 {
+    3
+}
 
 // Note: open_radius/close_radius/erode_radius live in MorphologyParams, not ColorPartitionParams.
 // These helpers serve MorphologyParams::default().
@@ -252,7 +326,11 @@ pub struct MorphologyParams {
 
 impl Default for MorphologyParams {
     fn default() -> Self {
-        Self { open_radius: 2, close_radius: 8, erode_radius: 3 }
+        Self {
+            open_radius: 2,
+            close_radius: 8,
+            erode_radius: 3,
+        }
     }
 }
 
@@ -274,14 +352,27 @@ pub struct SubjectPriorParams {
 
 impl Default for SubjectPriorParams {
     fn default() -> Self {
-        Self { center_x: 0.5, center_y: 0.55, radius_x: 0.35, radius_y: 0.45 }
+        Self {
+            center_x: 0.5,
+            center_y: 0.55,
+            radius_x: 0.35,
+            radius_y: 0.45,
+        }
     }
 }
 
-fn default_center_x() -> f64 { 0.5 }
-fn default_center_y() -> f64 { 0.55 }
-fn default_radius_x() -> f64 { 0.35 }
-fn default_radius_y() -> f64 { 0.45 }
+fn default_center_x() -> f64 {
+    0.5
+}
+fn default_center_y() -> f64 {
+    0.55
+}
+fn default_radius_x() -> f64 {
+    0.35
+}
+fn default_radius_y() -> f64 {
+    0.45
+}
 
 /// 校验 filter 配置：互斥检查 + 值域检查
 pub fn validate_filter(filter: &FilterParams) -> Result<(), anyhow::Error> {
