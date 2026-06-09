@@ -18,6 +18,20 @@ pub fn save_gray_png(data: &[f64], w: u32, h: u32, path: &Path) -> Result<()> {
     img.save(path).context(format!("save {}", path.display()))
 }
 
+/// 保存单通道特征图，并用红点标出按亮度加权的质心。
+pub fn save_gray_png_with_centroid(data: &[f64], w: u32, h: u32, path: &Path) -> Result<()> {
+    let mut img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(w, h, |x, y| {
+        let i = (y * w + x) as usize;
+        let v = (data[i].clamp(0.0, 1.0) * 255.0) as u8;
+        Rgb([v, v, v])
+    });
+    if let Some((cx, cy)) = weighted_centroid(data, w, h) {
+        let radius = ((w.min(h) as f64 / 140.0).round() as i32).clamp(2, 5);
+        draw_centroid_marker(&mut img, cx, cy, radius);
+    }
+    img.save(path).context(format!("save {}", path.display()))
+}
+
 /// 保存 RGB PNG
 pub fn save_rgb_png(rgb: &[[f64; 3]], w: u32, h: u32, path: &Path) -> Result<()> {
     let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(w, h, |x, y| {
@@ -82,7 +96,12 @@ pub fn make_contact_sheet(
 
     // 特征图
     for &(name, feat) in features {
-        thumbs.push(make_thumb_gray_f32(feat, w, h, cell_w, cell_h));
+        let thumb = if name == "dct" || name == "spectral" {
+            make_thumb_gray_f32_with_centroid(feat, w, h, cell_w, cell_h)
+        } else {
+            make_thumb_gray_f32(feat, w, h, cell_w, cell_h)
+        };
+        thumbs.push(thumb);
         labels.push(shorten_name(name));
     }
 
@@ -216,6 +235,17 @@ fn make_thumb_gray_f32(data: &[f64], src_w: u32, src_h: u32, dst_w: u32, dst_h: 
     })
 }
 
+fn make_thumb_gray_f32_with_centroid(data: &[f64], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+    let mut thumb = make_thumb_gray_f32(data, src_w, src_h, dst_w, dst_h);
+    if let Some((cx, cy)) = weighted_centroid(data, src_w, src_h) {
+        let scale_x = dst_w as f64 / src_w as f64;
+        let scale_y = dst_h as f64 / src_h as f64;
+        let radius = ((dst_w.min(dst_h) as f64 / 44.0).round() as i32).clamp(2, 4);
+        draw_centroid_marker(&mut thumb, cx * scale_x, cy * scale_y, radius);
+    }
+    thumb
+}
+
 fn make_thumb_rgb(data: &[[f64; 3]], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
     if data.is_empty() { return make_empty_thumb(dst_w, dst_h); }
     let orig: RgbImage = ImageBuffer::from_fn(src_w, src_h, |x, y| {
@@ -245,4 +275,51 @@ fn make_palette_thumb(palette: &[PaletteEntry], w: u32, h: u32) -> ImageBuffer<R
         let b = u8::from_str_radix(&hex[5..7], 16).unwrap_or(0);
         Rgb([r, g, b])
     })
+}
+
+fn weighted_centroid(data: &[f64], w: u32, h: u32) -> Option<(f64, f64)> {
+    if data.len() != (w * h) as usize {
+        return None;
+    }
+    let mut sum_w = 0.0;
+    let mut sum_x = 0.0;
+    let mut sum_y = 0.0;
+    for y in 0..h {
+        for x in 0..w {
+            let v = data[(y * w + x) as usize].clamp(0.0, 1.0);
+            sum_w += v;
+            sum_x += v * x as f64;
+            sum_y += v * y as f64;
+        }
+    }
+    if sum_w <= 1e-12 {
+        return None;
+    }
+    Some((sum_x / sum_w, sum_y / sum_w))
+}
+
+fn draw_centroid_marker(canvas: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, cx: f64, cy: f64, radius: i32) {
+    let (w, h) = canvas.dimensions();
+    let cx = cx.round() as i32;
+    let cy = cy.round() as i32;
+    let outer = radius + 1;
+    for dy in -outer..=outer {
+        for dx in -outer..=outer {
+            let dist2 = dx * dx + dy * dy;
+            if dist2 > outer * outer {
+                continue;
+            }
+            let x = cx + dx;
+            let y = cy + dy;
+            if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
+                continue;
+            }
+            let color = if dist2 <= radius * radius {
+                Rgb([255, 0, 0])
+            } else {
+                Rgb([255, 255, 255])
+            };
+            canvas.put_pixel(x as u32, y as u32, color);
+        }
+    }
 }

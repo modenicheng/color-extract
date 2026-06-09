@@ -45,7 +45,7 @@ percentile:
 # 4. 全局残差基准值选择（稳健中心估计）
 # ═════════════════════════════════════════════════════════════════════════════
 #
-# light / sat 各有一套独立的稳健中心参数，结构一致。
+#   light / lab_a / lab_b 各有一套独立的稳健中心参数，结构一致。
 #
 # 流程: 1. 感知压缩 (gamma 或 log)
 #       2. 压缩域 clip 到 [p{trim_low}, p{trim_high}]
@@ -92,36 +92,76 @@ global_residual:
     gamma_power: 1 # 禁用gamma缩放
     # log_base: 2.718       # 仅 compression=log 时有效
 
+  # Lab a* 红-绿轴全局残差。a* ≈ [-128, 127]，计算时自动归一化到 [0,1]。
+  lab_a:
+    compression: gamma
+    trim_low: 2.0
+    trim_high: 98.0
+    trimmed_mean_weight: 0.65
+    median_weight: 0.35
+    gamma_power: 0.5
+
+  # Lab b* 黄-蓝轴全局残差。b* ≈ [-128, 127]，计算时自动归一化到 [0,1]。
+  lab_b:
+    compression: gamma
+    trim_low: 2.0
+    trim_high: 98.0
+    trimmed_mean_weight: 0.65
+    median_weight: 0.35
+    gamma_power: 0.5
+
 # ═════════════════════════════════════════════════════════════════════════════
-# 4b. 背景估计参数
+# 4b. 背景估计参数（三阶段管线: 色域切分 + BFS 连通 + 软 mask）
 # ═════════════════════════════════════════════════════════════════════════════
 #
-# background_lab_residual: 每个像素到边界背景 LAB 模型的距离。
-#   流程: 采样边界 band → 对 L*/a*/b* 各做 percentile trimmed mean + median
-#         → 加权欧氏距离 → percentile normalize
-#   border_band:       边界采样宽度（像素），默认 12
-#   trim_low/high:     LAB 各通道 trimmed mean 的百分位截断，默认 10.0 / 90.0
-#   trimmed_mean_weight / median_weight: 混合系数，默认 0.7 / 0.3
+# Phase 1 — Color Partition (Median Cut):
+#   partition.enabled:             是否启用以色域切分做背景估计（关闭则全部视为前景）
+#   partition.max_depth:            Median Cut 最大递归深度（默认 5）
+#   partition.max_clusters:         合并后最大簇数（默认 16）
+#   partition.variance_threshold:   方差阈值，低于此值停止切分（默认 0.1）
+#   partition.min_cluster_area_ratio: 小簇面积比阈值（默认 0.01）
+#   partition.border_band:          边界采样 band 宽度（像素，默认 3）
+#   partition.bg_score_threshold:   背景评分阈值（默认 0.55）
+#   partition.bg_connect_threshold: BFS 连通 LAB 距离阈值（默认 0.08）
+#   partition.max_bg_ratio:         最大背景占比保护（默认 0.85）
 #
-# background_connected_mask: BFS 从边界 flood fill 检测连通背景区域。
-#   connectedness:
-#     dist_threshold_factor:  BFS 阈值因子，阈值 = bg_max_dist × factor (默认 1.5)
-#     blur_sigma:             mask 软化 blur (默认 2.0，0=不 blur)
-#     strength:               前景置信度 = 1.0 - mask × strength (默认 0.85)
+# Phase 2 — Morphology:
+#   morphology.open_radius:         开运算半径（默认 2）
+#   morphology.close_radius:        闭运算半径（默认 8）
+#   morphology.erode_radius:        最终腐蚀半径（默认 3）
 #
-# 两个特征图均有独立权重（见下方 weights_add / weights_mul），
-# 可通过将权重调为 0 来禁用。
+# 两幅输出特征图:
+#   - background_mask_morph:       前景 mask（1=前景，0=背景），经 morph 处理
+#   - background_fg_confidence:    前景置信度（软 mask，三阶段管线输出）
 
 background:
-  border_band: 20
-  trim_low: 2.0
-  trim_high: 98.0
-  trimmed_mean_weight: 0.5
-  median_weight: 0.5
-  connectedness:
-    dist_threshold_factor: 0.65
-    blur_sigma: 0.0
-    strength: 0.8
+  partition:
+    enabled: true
+    max_depth: 5
+    max_clusters: 16
+    variance_threshold: 0.1
+    min_cluster_area_ratio: 0.01
+    border_band: 3
+    bg_score_threshold: 0.55
+    bg_connect_threshold: 0.08
+    max_bg_ratio: 0.85
+  morphology:
+    open_radius: 2
+    close_radius: 8
+    erode_radius: 3
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 4c. Subject Prior（高斯中心偏向）
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# center_x/y: 高斯中心（归一化坐标，0~1）。默认 (0.5, 0.55) — 略偏下的构图中心。
+# radius_x/y: 高斯半径（归一化坐标，0~1）。默认 (0.35, 0.45) — 纵向略宽。
+
+subject_prior:
+  center_x: 0.5
+  center_y: 0.55
+  radius_x: 0.35
+  radius_y: 0.45
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 5. 特征权重
@@ -141,11 +181,16 @@ background:
 # │ lab_grad             │  0.22  │ 结构边缘（线条、轮廓）被高亮              │
 # │ spectral             │  0.12  │ 全局视觉显著区域（突兀物体）被突出        │
 # │ global_light         │  0.05  │ 偏离整体亮度的色块（亮/暗异常区域）       │
-# │ global_sat           │  0.08  │ 偏离整体饱和度的色块（鲜艳/灰暗异常区域）  │
+# │ global_sat           │  —     │ 已替换为 global_lab_a + global_lab_b           │
+# │ global_lab_a         │  0.09  │ 偏离全局 a* 红-绿色调的像素（暖调/冷调异常）     │
+# │ global_lab_b         │  0.09  │ 偏离全局 b* 黄-蓝色调的像素                     │
 # │ local_light          │  0.06  │ HSL 局部亮度细节（精细光影变化）          │
-# │ local_sat            │  0.06  │ HSL 局部饱和度细节（精细色彩变化）        │
+# │ local_sat            │  —     │ 已替换为 local_lab_a + local_lab_b             │
+# │ local_lab_a          │  0.04  │ LAB a* 局部残差（红-绿轴细节变化）              │
+# │ local_lab_b          │  0.04  │ LAB b* 局部残差（黄-蓝轴细节变化）              │
 # │ background_lab       │  0.19  │ 偏离边界背景色的区域（前景物体）被突出   │
 # │ background_fg_conf   │  0.30  │ 非边界连通背景的区域（主体区域）被突出   │
+# │ subject_prior        │  0.10  │ 离画面中心越近权重越高（构图中心偏向）   │
 # └──────────────────────┴────────┴──────────────────────────────────────────┘
 #
 # 常见调参策略:
@@ -156,30 +201,36 @@ background:
 #   • 可以某一分支全部设 0，等价于只用另一分支
 
 weights_add:
-  dct:                     0.0
+  dct:                     0.12
   lab_grad:                0.22
   spectral:                0.12
   global_light:            0.08
-  global_sat:              0.18
+  global_lab_a:            0.09
+  global_lab_b:            0.09
   local_light:             0.06
-  local_sat:               0.16
-  background_lab:          0.20
-  background_fg_confidence: 0.11
+  local_lab_a:             0.18
+  local_lab_b:             0.08
+  background_lab:          0.24
+  background_fg_confidence: 0.30
+  subject_prior:            0.10
 
 # 乘法分支权重（与加法独立，可完全不同）
 # 乘法分支 = 软乘法: score = product( (ε + (1-ε)*feat_i)^w_i )
 # 特性: 任一特征值接近 0 时，乘积会被"拉低"，所以乘法分支比加法更"保守"。
 #       适合用于"所有特征同时认可"的区域才高亮的场景。
 weights_mul:
-  dct:                     0.0
+  dct:                     0.02
   lab_grad:                0.10
   spectral:                0.10
   global_light:            0.13
-  global_sat:              0.25
+  global_lab_a:            0.15
+  global_lab_b:            0.125
   local_light:             0.25
-  local_sat:               0.15
-  background_lab:          0.25
-  background_fg_confidence: 0.00
+  local_lab_a:             0.075
+  local_lab_b:             0.075
+  background_lab:          0.30
+  background_fg_confidence: 0.15
+  subject_prior:            0.05
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 6. Hybrid Fusion 参数
@@ -203,7 +254,7 @@ fusion:
   #   gamma = 1 → 无变化（线性映射）。
   #   gamma > 1 → 整体压暗，亮区更亮、暗区更暗，对比度增强。
   # 建议范围: 0.3~2.0，默认 1.0 不做额外调整。
-  gamma:   0.8
+  gamma:   1.1
 
   # 软乘法 baseline。防止某特征值为 0 时乘积归零。
   # 实际公式中用 (ε + (1-ε)*feat) 替代原始 feat。

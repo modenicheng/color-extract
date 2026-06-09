@@ -27,9 +27,10 @@ pub fn percentile_normalize(data: &[f64], p_low: f64, p_high: f64) -> Vec<f64> {
 pub fn weights_to_array(w: &Weights) -> Vec<f64> {
     vec![
         w.dct, w.lab_grad, w.spectral,
-        w.global_light, w.global_sat,
-        w.local_light, w.local_sat,
+        w.global_light, w.global_lab_a, w.global_lab_b,
+        w.local_light, w.local_lab_a, w.local_lab_b,
         w.background_lab, w.background_fg_confidence,
+        w.subject_prior,
     ]
 }
 

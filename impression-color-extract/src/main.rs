@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
-use crate::params::{load_params, Params};
+use crate::params::{load_params, Params, SoftMaskParams};
 use crate::image::load_image;
 use crate::dct::compute_dct_complexity;
 use crate::gradient::compute_lab_gradient;
@@ -27,7 +27,7 @@ use crate::partition::partition_and_separate;
 use crate::palette::extract_palette;
 use crate::fusion::percentile_normalize;
 use crate::render::{
-    save_gray_png, save_rgb_png, make_contact_sheet, generate_html_report,
+    save_gray_png, save_gray_png_with_centroid, save_rgb_png, make_contact_sheet, generate_html_report,
 };
 
 fn main() -> Result<()> {
@@ -111,7 +111,7 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
     // ── (1) DCT 纹理复杂度 ──
     let dct_raw = compute_dct_complexity(&data.gray, w as usize, h as usize);
     let dct_norm = percentile_normalize(&dct_raw, p_low, p_high);
-    save_gray_png(&dct_norm, w, h, &out_dir.join("dct_complexity.png"))?;
+    save_gray_png_with_centroid(&dct_norm, w, h, &out_dir.join("dct_complexity.png"))?;
 
     // ── (2) LAB 梯度 ──
     let lab_raw = compute_lab_gradient(&data.lab_l, &data.lab_a, &data.lab_b, w as usize, h as usize);
@@ -119,9 +119,16 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
     save_gray_png(&lab_norm, w, h, &out_dir.join("lab_gradient.png"))?;
 
     // ── (3) 频谱残差 ──
-    let sr_raw = compute_spectral_residual(&data.lab_l, &data.lab_a, &data.lab_b, w as usize, h as usize);
+    let sr_raw = compute_spectral_residual(
+        &data.lab_l,
+        &data.lab_a,
+        &data.lab_b,
+        w as usize,
+        h as usize,
+        &params.spectral_residual,
+    );
     let sr_norm = percentile_normalize(&sr_raw, p_low, p_high);
-    save_gray_png(&sr_norm, w, h, &out_dir.join("spectral_residual.png"))?;
+    save_gray_png_with_centroid(&sr_norm, w, h, &out_dir.join("spectral_residual.png"))?;
 
     // ── (4) 局部残差 ──
     let loc_l_raw = compute_local_light_residual(&data.hsl_l, w, h, gs);
@@ -142,9 +149,16 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
     let has_partition = params.color_partition.enabled && !pr.bg_mask_raw.is_empty();
     let saliency_fg = soft_foreground_saliency(
         &[&dct_norm, &lab_norm, &sr_norm, &loc_l_norm, &loc_s_norm],
-        &[0.18, 0.30, 0.22, 0.15, 0.15],
+        &[
+            params.soft_mask.saliency_dct,
+            params.soft_mask.saliency_lab_grad,
+            params.soft_mask.saliency_spectral,
+            params.soft_mask.saliency_local_light,
+            params.soft_mask.saliency_local_sat,
+        ],
         w,
         h,
+        &params.soft_mask,
     );
     let border_bg = border_background_likelihood(
         &data.lab_l,
@@ -155,9 +169,9 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
         params.color_partition.border_band,
     );
     let (bg_mask_raw, bg_mask_morph, fg_confidence) = if has_partition {
-        refine_soft_masks(&pr.bg_mask_raw, &pr.bg_mask_morph, &saliency_fg, &border_bg, w, h)
+        refine_soft_masks(&pr.bg_mask_raw, &pr.bg_mask_morph, &saliency_fg, &border_bg, w, h, &params.soft_mask)
     } else {
-        let fg = soft_foreground_from_background(&border_bg, &saliency_fg, w, h);
+        let fg = soft_foreground_from_background(&border_bg, &saliency_fg, w, h, &params.soft_mask);
         let bg = invert_mask(&fg);
         (bg.clone(), bg, fg)
     };
@@ -253,7 +267,13 @@ fn process_one(path: &Path, params: &Params, max_dim: u32, out_base: &Path) -> R
     Ok(stem)
 }
 
-fn soft_foreground_saliency(features: &[&[f64]], weights: &[f64], w: u32, h: u32) -> Vec<f64> {
+fn soft_foreground_saliency(
+    features: &[&[f64]],
+    weights: &[f64],
+    w: u32,
+    h: u32,
+    params: &SoftMaskParams,
+) -> Vec<f64> {
     if features.is_empty() {
         return Vec::new();
     }
@@ -276,8 +296,15 @@ fn soft_foreground_saliency(features: &[&[f64]], weights: &[f64], w: u32, h: u32
     for y in 0..h as usize {
         for x in 0..w as usize {
             let i = y * w as usize + x;
-            let subject = subject_prior(x, y, w as usize, h as usize);
-            soft[i] = (base[i] * 0.25 + smooth[i] * 0.45 + subject * 0.30).clamp(0.0, 1.0);
+            let subject = subject_prior(x, y, w as usize, h as usize, params);
+            soft[i] = weighted3(
+                base[i],
+                params.saliency_base_weight,
+                smooth[i],
+                params.saliency_smooth_weight,
+                subject,
+                params.saliency_subject_weight,
+            );
         }
     }
     let mut soft = percentile_normalize(&soft, 2.0, 98.0);
@@ -356,14 +383,14 @@ fn center_prior(x: usize, y: usize, w: usize, h: usize) -> f64 {
     (1.0 - dist).clamp(0.0, 1.0)
 }
 
-fn subject_prior(x: usize, y: usize, w: usize, h: usize) -> f64 {
+fn subject_prior(x: usize, y: usize, w: usize, h: usize, params: &SoftMaskParams) -> f64 {
     if w == 0 || h == 0 {
         return 0.0;
     }
     let nx = (x as f64 + 0.5) / w as f64;
     let ny = (y as f64 + 0.5) / h as f64;
-    let dx = (nx - 0.5) / 0.34;
-    let dy = (ny - 0.55) / 0.48;
+    let dx = (nx - params.subject_center_x) / params.subject_radius_x.max(1e-6);
+    let dy = (ny - params.subject_center_y) / params.subject_radius_y.max(1e-6);
     (-(dx * dx + dy * dy)).exp().clamp(0.0, 1.0)
 }
 
@@ -409,10 +436,11 @@ fn refine_soft_masks(
     border_bg: &[f64],
     w: u32,
     h: u32,
+    params: &SoftMaskParams,
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let raw_bg = soft_background_from_partition(bg_raw, border_bg);
     let morph_bg = soft_background_from_partition(bg_morph, border_bg);
-    let fg = soft_foreground_from_background(&morph_bg, saliency_fg, w, h);
+    let fg = soft_foreground_from_background(&morph_bg, saliency_fg, w, h, params);
     let morph_bg = invert_mask(&fg);
     (raw_bg, morph_bg, fg)
 }
@@ -432,18 +460,42 @@ fn soft_background_from_partition(mask: &[f64], border_bg: &[f64]) -> Vec<f64> {
         .collect()
 }
 
-fn soft_foreground_from_background(bg: &[f64], saliency_fg: &[f64], w: u32, h: u32) -> Vec<f64> {
+fn soft_foreground_from_background(
+    bg: &[f64],
+    saliency_fg: &[f64],
+    w: u32,
+    h: u32,
+    params: &SoftMaskParams,
+) -> Vec<f64> {
     let mut fg = vec![0.0; bg.len()];
     for y in 0..h as usize {
         for x in 0..w as usize {
             let i = y * w as usize + x;
             let color_fg = 1.0 - bg[i];
-            let subject = subject_prior(x, y, w as usize, h as usize);
-            fg[i] = (color_fg * 0.45 + saliency_fg[i] * 0.15 + subject * 0.40).clamp(0.0, 1.0);
+            let subject = subject_prior(x, y, w as usize, h as usize, params);
+            fg[i] = weighted3(
+                color_fg,
+                params.foreground_color_weight,
+                saliency_fg[i],
+                params.foreground_saliency_weight,
+                subject,
+                params.foreground_subject_weight,
+            );
         }
     }
     let radius = ((w.min(h) / 40).clamp(6, 24)) as usize;
     percentile_normalize(&box_blur_mask(&fg, w as usize, h as usize, radius), 2.0, 98.0)
+}
+
+fn weighted3(a: f64, aw: f64, b: f64, bw: f64, c: f64, cw: f64) -> f64 {
+    let aw = aw.max(0.0);
+    let bw = bw.max(0.0);
+    let cw = cw.max(0.0);
+    let sum = aw + bw + cw;
+    if sum < 1e-12 {
+        return 0.0;
+    }
+    ((a * aw + b * bw + c * cw) / sum).clamp(0.0, 1.0)
 }
 
 fn invert_mask(mask: &[f64]) -> Vec<f64> {

@@ -223,11 +223,14 @@ fn shorten_feature_name(name: &str) -> String {
         "lab_gradient" => "LAB Grad",
         "spectral_residual" => "Spect Res",
         "global_light_residual" => "G-Light",
-        "global_sat_residual" => "G-Sat",
+        "global_lab_a_residual" => "G-LabA",
+        "global_lab_b_residual" => "G-LabB",
         "local_light_residual" => "L-Light",
-        "local_sat_residual" => "L-Sat",
-        "background_lab_residual" => "BG Lab",
-        "background_foreground_confidence" => "BG Conf",
+        "local_lab_a_residual" => "L-LabA",
+        "local_lab_b_residual" => "L-LabB",
+        "background_mask_morph" => "BG Mask",
+        "background_fg_confidence" => "BG Conf",
+        "subject_prior" => "Subj Prior",
         other => other,
     }.to_string()
 }

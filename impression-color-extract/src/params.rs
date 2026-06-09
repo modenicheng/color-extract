@@ -11,7 +11,9 @@ pub struct Params {
     pub max_dim: u32,
     pub gauss_sigma: f32,
     pub percentile: PercentileParams,
+    pub spectral_residual: SpectralResidualParams,
     pub color_partition: ColorPartitionParams,
+    pub soft_mask: SoftMaskParams,
     pub feature_weights: FeatureWeights,
     pub palette: PaletteParams,
     pub output: OutputParams,
@@ -21,6 +23,16 @@ pub struct Params {
 pub struct PercentileParams {
     pub low: f64,
     pub high: f64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SpectralResidualParams {
+    pub mean_filter_kernel: usize,
+    pub gaussian_sigma: f64,
+    pub l_weight: f64,
+    pub a_weight: f64,
+    pub b_weight: f64,
+    pub post_gamma: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -38,6 +50,25 @@ pub struct ColorPartitionParams {
     pub open_radius: u32,
     pub close_radius: u32,
     pub erode_radius: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SoftMaskParams {
+    pub saliency_dct: f64,
+    pub saliency_lab_grad: f64,
+    pub saliency_spectral: f64,
+    pub saliency_local_light: f64,
+    pub saliency_local_sat: f64,
+    pub saliency_base_weight: f64,
+    pub saliency_smooth_weight: f64,
+    pub saliency_subject_weight: f64,
+    pub foreground_color_weight: f64,
+    pub foreground_saliency_weight: f64,
+    pub foreground_subject_weight: f64,
+    pub subject_center_x: f64,
+    pub subject_center_y: f64,
+    pub subject_radius_x: f64,
+    pub subject_radius_y: f64,
 }
 
 #[derive(Debug, Deserialize)]

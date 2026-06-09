@@ -21,13 +21,37 @@ percentile:
   high: 99.0
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 4. 色域切分 (Median Cut) — 用于背景/主体分离
+# 4. 频谱残差参数
+# ═════════════════════════════════════════════════════════════════════════════
+# 控制 spectral_residual.png，以及 soft_mask 中 saliency_spectral 输入的形态。
+#
+# mean_filter_kernel:
+#   log 幅度谱上的均值滤波核大小。越大，残差响应越粗、更关注大尺度突兀区域；
+#   越小，响应越细、更敏感但也更容易噪声化。建议使用奇数: 3 / 5 / 7。
+# gaussian_sigma:
+#   IFFT 后显著图的空间高斯平滑。越大越平滑、区域更连贯；越小边缘更锐。
+#   设为 0 可关闭平滑。
+# l/a/b_weight:
+#   LAB 三通道融合权重。L 关注亮度突兀，a/b 关注色彩突兀。
+#   如果烟花/灯光过强，可降低 l_weight；如果彩色物体不够突出，可提高 a/b。
+# post_gamma:
+#   最终频谱残差图的 gamma。<1 会抬高弱响应，>1 会压低弱响应、突出最强区域。
+spectral_residual:
+  mean_filter_kernel: 3
+  gaussian_sigma: 3.0
+  l_weight: 1.0
+  a_weight: 1.0
+  b_weight: 1.0
+  post_gamma: 1.0
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 5. 色域切分 (Median Cut) — 用于背景/主体分离
 # ═════════════════════════════════════════════════════════════════════════════
 color_partition:
   enabled: true
   max_clusters: 16
   max_depth: 5
-  target_samples: 20000
+  target_samples: 10000
   variance_threshold: 0.01
   min_cluster_area_ratio: 0.005
   border_band: 12
@@ -39,7 +63,63 @@ color_partition:
   erode_radius: 1
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 5. 特征融合权重
+# 6. 软前景/背景置信度参数
+# ═════════════════════════════════════════════════════════════════════════════
+# 这一节控制 bg_mask_raw / bg_mask_morph / fg_confidence 的软预测。
+#
+# 调参思路:
+# - 人物/主体被误判为背景: 提高 foreground_subject_weight 或 saliency_subject_weight；
+#   也可以增大 subject_radius_x / subject_radius_y，让主体先验覆盖更大区域。
+# - 背景也被大面积当成前景: 降低 foreground_subject_weight，或缩小主体半径；
+#   同时提高 foreground_color_weight，让边界颜色背景模型更有话语权。
+# - 只有轮廓/烟花/纹理很亮，主体大色块偏暗: 降低 foreground_saliency_weight，
+#   提高 foreground_subject_weight；saliency_lab_grad 不宜过高。
+# - 想更依赖真实视觉显著性而少依赖位置: 提高 foreground_saliency_weight，
+#   降低 foreground_subject_weight。
+# - 想让前景图更平滑成区域: 提高 saliency_smooth_weight。
+# - 想保留更多细节边缘: 提高 saliency_base_weight，降低 saliency_smooth_weight。
+#
+# 权重都是“相对权重”，代码会自动归一化；不要求三项相加等于 1。
+soft_mask:
+  # 5.1 软显著性输入特征权重
+  # dct: 纹理复杂度。调大后烟花、复杂纹理、花纹更容易变前景。
+  # lab_grad: LAB 边缘梯度。调大后轮廓更亮，但容易变成边缘图。
+  # spectral: 频谱残差。调大后视觉突兀区域更亮。
+  # local_light: 局部亮度残差。调大后亮暗突变区域更亮。
+  # local_sat: 局部饱和度残差。调大后高饱和装饰/物体更亮。
+  saliency_dct: 0.12
+  saliency_lab_grad: 0.20
+  saliency_spectral: 0.38
+  saliency_local_light: 0.10
+  saliency_local_sat: 0.20
+
+  # 5.2 软显著性内部融合权重
+  # base_weight: 原始显著性，细节多、边缘感强。
+  # smooth_weight: 平滑后的显著性，区域感强，减少碎边。
+  # subject_weight: 主体区域先验。调大后画面中部偏下的人物/主体更容易变前景。
+  saliency_base_weight: 0.15
+  saliency_smooth_weight: 0.45
+  saliency_subject_weight: 0.40
+
+  # 5.3 最终前景置信度融合权重
+  # color_weight: 来自“非边界背景颜色”的前景证据。调大后更尊重边界颜色背景模型。
+  # saliency_weight: 来自纹理/边缘/频谱显著性的前景证据。调大后高频细节更容易变前景。
+  # subject_weight: 主体区域先验权重。调大后人物主体更不容易被判成背景。
+  foreground_color_weight: 0.50
+  foreground_saliency_weight: 0.40
+  foreground_subject_weight: 0.10
+
+  # 5.4 主体区域先验形状
+  # 坐标范围是 0..1。center_x=0.5 表示水平居中；center_y=0.55 表示略偏下。
+  # radius_x/radius_y 越大，主体先验覆盖越宽/越高；越小则更集中。
+  # 对竖幅人物图: radius_y 通常 0.45-0.55；radius_x 通常 0.28-0.40。
+  subject_center_x: 0.50
+  subject_center_y: 0.55
+  subject_radius_x: 0.30
+  subject_radius_y: 0.48
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 7. 特征融合权重
 # ═════════════════════════════════════════════════════════════════════════════
 feature_weights:
   dct:             0.15
@@ -51,7 +131,7 @@ feature_weights:
   fg_confidence:   0.30
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 6. 调色板提取参数
+# 8. 调色板提取参数
 # ═════════════════════════════════════════════════════════════════════════════
 palette:
   algorithm: kmeanspp    # kmeanspp | minibatch | mediancut | octree
@@ -59,7 +139,7 @@ palette:
   min_fg_ratio: 0.05
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 7. 输出
+# 9. 输出
 # ═════════════════════════════════════════════════════════════════════════════
 output:
   dir: output/impression-color-extract

@@ -17,13 +17,27 @@ pub fn compute_global_light_residual(
     hsl_l.iter().map(|&v| (v - center).abs()).collect()
 }
 
-/// 计算 HSL saturation 全局残差: |pixel - robust_center| (稳健亮度中心)
-pub fn compute_global_sat_residual(
-    hsl_s: &[f64],
+/// 计算 LAB a* 全局残差（红-绿轴）: |pixel - robust_center|
+///
+/// Lab a* 值域约 [-128, 127]，先归一化到 [0, 1] 再计算稳健中心和残差。
+/// 残差域与被归一化通道一致 [0, 1]，后续由 percentile_normalize 统一处理。
+pub fn compute_global_lab_a_residual(
+    lab_a: &[f64],
     rcp: &RobustCenterParams,
 ) -> Vec<f64> {
-    let center = robust_center(hsl_s, rcp);
-    hsl_s.iter().map(|&v| (v - center).abs()).collect()
+    let normalized: Vec<f64> = lab_a.iter().map(|&v| (v + 128.0) / 256.0).collect();
+    let center = robust_center(&normalized, rcp);
+    normalized.iter().map(|&v| (v - center).abs()).collect()
+}
+
+/// 计算 LAB b* 全局残差（黄-蓝轴）: |pixel - robust_center|
+pub fn compute_global_lab_b_residual(
+    lab_b: &[f64],
+    rcp: &RobustCenterParams,
+) -> Vec<f64> {
+    let normalized: Vec<f64> = lab_b.iter().map(|&v| (v + 128.0) / 256.0).collect();
+    let center = robust_center(&normalized, rcp);
+    normalized.iter().map(|&v| (v - center).abs()).collect()
 }
 
 /// 稳健视觉亮度/饱和度中心估计
@@ -149,6 +163,14 @@ pub fn compute_local_light_residual(hsl_l: &[f64], w: u32, h: u32, sigma: f32) -
     compute_gaussian_residual(hsl_l, w, h, sigma)
 }
 
-pub fn compute_local_sat_residual(hsl_s: &[f64], w: u32, h: u32, sigma: f32) -> Vec<f64> {
-    compute_gaussian_residual(hsl_s, w, h, sigma)
+/// 计算 LAB a* 局部（Gaussian）残差（红-绿轴）
+pub fn compute_local_lab_a_residual(lab_a: &[f64], w: u32, h: u32, sigma: f32) -> Vec<f64> {
+    let normalized: Vec<f64> = lab_a.iter().map(|&v| (v + 128.0) / 256.0).collect();
+    compute_gaussian_residual(&normalized, w, h, sigma)
+}
+
+/// 计算 LAB b* 局部（Gaussian）残差（黄-蓝轴）
+pub fn compute_local_lab_b_residual(lab_b: &[f64], w: u32, h: u32, sigma: f32) -> Vec<f64> {
+    let normalized: Vec<f64> = lab_b.iter().map(|&v| (v + 128.0) / 256.0).collect();
+    compute_gaussian_residual(&normalized, w, h, sigma)
 }

@@ -23,13 +23,12 @@ use crate::dct::compute_dct_complexity;
 use crate::gradient::compute_lab_gradient;
 use crate::spectral::compute_spectral_residual;
 use crate::residual::{
-    compute_global_light_residual, compute_global_sat_residual,
-    compute_local_light_residual, compute_local_sat_residual,
+    compute_global_light_residual, compute_global_lab_a_residual, compute_global_lab_b_residual,
+    compute_local_light_residual, compute_local_lab_a_residual, compute_local_lab_b_residual,
 };
 use crate::background::{
-    compute_background_lab_residual,
-    compute_background_connected_mask,
-    mask_to_foreground_confidence,
+    compute_background_features,
+    compute_subject_prior,
 };
 
 use crate::render::{save_gray_png, save_rgb_png, make_contact_sheet_full};
@@ -144,7 +143,7 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
     let out_dir = out_base.join(&stem);
     std::fs::create_dir_all(&out_dir)?;
 
-    println!("  {} ({}×{}) — 9 features …", stem, w, h);
+    println!("  {} ({}×{}) — 12 features …", stem, w, h);
 
     // ── 保存 resize 后的原图 ──
     save_rgb_png(&data.rgb, w, h, &out_dir.join("resized.png"))?;
@@ -192,12 +191,19 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
     save_gray_png(&gl_l_norm, w, h, &out_dir.join("global_light_residual.png"))?;
     let t_gl = t0.elapsed();
 
-    // ── (5) Global sat residual (稳健亮度中心) ──
+    // ── (5a) Global LAB a* residual (红-绿轴稳健中心) ──
     let t0 = std::time::Instant::now();
-    let gl_s_raw = compute_global_sat_residual(&data.hsl_s, &params.global_residual.sat);
-    let gl_s_norm = percentile_normalize(&gl_s_raw, p_low, p_high);
-    save_gray_png(&gl_s_norm, w, h, &out_dir.join("global_sat_residual.png"))?;
-    let t_gs = t0.elapsed();
+    let gl_a_raw = compute_global_lab_a_residual(&data.lab_a, &params.global_residual.lab_a);
+    let gl_a_norm = percentile_normalize(&gl_a_raw, p_low, p_high);
+    save_gray_png(&gl_a_norm, w, h, &out_dir.join("global_lab_a_residual.png"))?;
+    let t_ga = t0.elapsed();
+
+    // ── (5b) Global LAB b* residual (黄-蓝轴稳健中心) ──
+    let t0 = std::time::Instant::now();
+    let gl_b_raw = compute_global_lab_b_residual(&data.lab_b, &params.global_residual.lab_b);
+    let gl_b_norm = percentile_normalize(&gl_b_raw, p_low, p_high);
+    save_gray_png(&gl_b_norm, w, h, &out_dir.join("global_lab_b_residual.png"))?;
+    let t_gb = t0.elapsed();
 
     // ── (6) Local (Gaussian) light residual ──
     let t0 = std::time::Instant::now();
@@ -206,65 +212,81 @@ fn process_one_image(path: &Path, params: &Params, max_dim: u32, out_base: &Path
     save_gray_png(&loc_l_norm, w, h, &out_dir.join("local_light_residual.png"))?;
     let t_ll = t0.elapsed();
 
-    // ── (7) Local (Gaussian) sat residual ──
+    // ── (7a) Local (Gaussian) LAB a* residual ──
     let t0 = std::time::Instant::now();
-    let loc_s_raw = compute_local_sat_residual(&data.hsl_s, w, h, params.gauss_sigma);
-    let loc_s_norm = percentile_normalize(&loc_s_raw, p_low, p_high);
-    save_gray_png(&loc_s_norm, w, h, &out_dir.join("local_sat_residual.png"))?;
-    let t_ls = t0.elapsed();
+    let loc_a_raw = compute_local_lab_a_residual(&data.lab_a, w, h, params.gauss_sigma);
+    let loc_a_norm = percentile_normalize(&loc_a_raw, p_low, p_high);
+    save_gray_png(&loc_a_norm, w, h, &out_dir.join("local_lab_a_residual.png"))?;
+    let t_la = t0.elapsed();
 
-    // ── (8) Background LAB residual ──
+    // ── (7b) Local (Gaussian) LAB b* residual ──
     let t0 = std::time::Instant::now();
-    let bg_raw = compute_background_lab_residual(
+    let loc_b_raw = compute_local_lab_b_residual(&data.lab_b, w, h, params.gauss_sigma);
+    let loc_b_norm = percentile_normalize(&loc_b_raw, p_low, p_high);
+    save_gray_png(&loc_b_norm, w, h, &out_dir.join("local_lab_b_residual.png"))?;
+    let t_lb = t0.elapsed();
+
+    // ── (8+9) Background features (三阶段管线: 色域切分 + BFS + 软 mask) ──
+    let t0 = std::time::Instant::now();
+    let (bg_mask_raw, bg_fg_raw) = compute_background_features(
         &data.lab_l, &data.lab_a, &data.lab_b, w, h, &params.background,
     );
-    let bg_norm = percentile_normalize(&bg_raw, p_low, p_high);
-    save_gray_png(&bg_norm, w, h, &out_dir.join("background_lab_residual.png"))?;
-    let t_bgl = t0.elapsed();
+    let bg_mask_norm = percentile_normalize(&bg_mask_raw, p_low, p_high);
+    let bg_fg_norm = percentile_normalize(&bg_fg_raw, p_low, p_high);
+    save_gray_png(&bg_mask_norm, w, h, &out_dir.join("background_mask_morph.png"))?;
+    save_gray_png(&bg_fg_norm, w, h, &out_dir.join("background_fg_confidence.png"))?;
+    let t_bg = t0.elapsed();
 
-    // ── (9) Background connected mask + foreground confidence ──
+    // ── (10) Subject Prior ──
     let t0 = std::time::Instant::now();
-    let bg_mask = compute_background_connected_mask(&bg_raw, w, h, &params.background);
-    save_gray_png(&bg_mask, w, h, &out_dir.join("background_connected_mask.png"))?;
-    let bg_fg = mask_to_foreground_confidence(&bg_mask, params.background.connectedness.strength);
-    save_gray_png(&bg_fg, w, h, &out_dir.join("background_foreground_confidence.png"))?;
-    let t_bgc = t0.elapsed();
+    let sp_raw = compute_subject_prior(w, h, &params.subject_prior);
+    let sp_norm = percentile_normalize(&sp_raw, p_low, p_high);
+    save_gray_png(&sp_norm, w, h, &out_dir.join("subject_prior.png"))?;
+    let t_sp = t0.elapsed();
 
     println!(
-        "    DCT={:.1}s LAB={:.1}s SR={:.1}s GL={:.1}s GS={:.1}s LL={:.1}s LS={:.1}s BGL={:.1}s BGC={:.1}s — fusion …",
+        "    DCT={:.1}s LAB={:.1}s SR={:.1}s GL={:.1}s GA={:.1}s GB={:.1}s LL={:.1}s LA={:.1}s LB={:.1}s BG={:.1}s SP={:.1}s — fusion …",
         t_dct.as_secs_f64(),
         t_lab.as_secs_f64(),
         t_sr.as_secs_f64(),
         t_gl.as_secs_f64(),
-        t_gs.as_secs_f64(),
+        t_ga.as_secs_f64(),
+        t_gb.as_secs_f64(),
         t_ll.as_secs_f64(),
-        t_ls.as_secs_f64(),
-        t_bgl.as_secs_f64(),
-        t_bgc.as_secs_f64(),
+        t_la.as_secs_f64(),
+        t_lb.as_secs_f64(),
+        t_bg.as_secs_f64(),
+        t_sp.as_secs_f64(),
     );
 
     // ── 归一化后的所有特征 ──
-    let features: [&[f64]; 9] = [
+    let features: [&[f64]; 12] = [
         &dct_norm,
         &lab_grad_norm,
         &sr_norm,
         &gl_l_norm,
-        &gl_s_norm,
+        &gl_a_norm,
+        &gl_b_norm,
         &loc_l_norm,
-        &loc_s_norm,
-        &bg_norm,
-        &bg_fg,
+        &loc_a_norm,
+        &loc_b_norm,
+        &bg_mask_norm,
+        &bg_fg_norm,
+        &sp_norm,
     ];
-    let feature_names: [&str; 9] = [
+    let feature_names: [&str; 12] = [
         "dct_complexity",
         "lab_gradient",
         "spectral_residual",
         "global_light_residual",
-        "global_sat_residual",
+        "global_lab_a_residual",
+        "global_lab_b_residual",
         "local_light_residual",
-        "local_sat_residual",
-        "background_lab_residual",
-        "background_foreground_confidence",
+        "local_lab_a_residual",
+        "local_lab_b_residual",
+        "background_mask_morph",
+        "background_fg_confidence",
+        "subject_prior",
     ];
 
     // ── 从 YAML 提取权重数组 ──

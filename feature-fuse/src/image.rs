@@ -21,6 +21,7 @@ pub struct ImageData {
     /// CIELAB b*
     pub lab_b: Vec<f64>,
     /// HSL saturation [0, 1]
+    #[allow(dead_code)]
     pub hsl_s: Vec<f64>,
     /// HSL lightness [0, 1]
     pub hsl_l: Vec<f64>,

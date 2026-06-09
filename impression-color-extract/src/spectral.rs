@@ -5,6 +5,8 @@
 use rustfft::{FftPlanner, num_complex::Complex};
 use std::sync::Arc;
 
+use crate::params::SpectralResidualParams;
+
 fn fft2d_real(data: &mut [Complex<f64>], w: usize, h: usize, forward: bool) {
     let mut planner = FftPlanner::new();
     let fft_row: Arc<dyn rustfft::Fft<f64>> =
@@ -77,7 +79,7 @@ fn gaussian_blur_1d(src: &[f64], w: usize, h: usize, sigma: f64) -> Vec<f64> {
     out
 }
 
-fn spectral_residual_single(ch: &[f64], w: usize, h: usize) -> Vec<f64> {
+fn spectral_residual_single(ch: &[f64], w: usize, h: usize, mean_filter_kernel: usize, gaussian_sigma: f64) -> Vec<f64> {
     let n = w * h;
     let mut data: Vec<Complex<f64>> = ch.iter().map(|&v| Complex::new(v, 0.0)).collect();
     fft2d_real(&mut data, w, h, true);
@@ -90,7 +92,7 @@ fn spectral_residual_single(ch: &[f64], w: usize, h: usize) -> Vec<f64> {
         phase[i] = c.im.atan2(c.re);
     }
 
-    let avg_log_amp = mean_filter(&log_amp, w, h, 3);
+    let avg_log_amp = mean_filter(&log_amp, w, h, mean_filter_kernel);
     let mut residual = vec![0.0; n];
     for i in 0..n { residual[i] = log_amp[i] - avg_log_amp[i]; }
 
@@ -100,14 +102,37 @@ fn spectral_residual_single(ch: &[f64], w: usize, h: usize) -> Vec<f64> {
 
     let norm = n as f64;
     let mut saliency: Vec<f64> = recon.iter().map(|c| c.re / norm).collect();
-    saliency = gaussian_blur_1d(&saliency, w, h, 3.0);
+    if gaussian_sigma > 0.0 {
+        saliency = gaussian_blur_1d(&saliency, w, h, gaussian_sigma);
+    }
     saliency
 }
 
-pub fn compute_spectral_residual(lab_l: &[f64], lab_a: &[f64], lab_b: &[f64], w: usize, h: usize) -> Vec<f64> {
-    let s_l = spectral_residual_single(lab_l, w, h);
-    let s_a = spectral_residual_single(lab_a, w, h);
-    let s_b = spectral_residual_single(lab_b, w, h);
+pub fn compute_spectral_residual(
+    lab_l: &[f64],
+    lab_a: &[f64],
+    lab_b: &[f64],
+    w: usize,
+    h: usize,
+    params: &SpectralResidualParams,
+) -> Vec<f64> {
+    let mean_filter_kernel = params.mean_filter_kernel.max(1);
+    let s_l = spectral_residual_single(lab_l, w, h, mean_filter_kernel, params.gaussian_sigma);
+    let s_a = spectral_residual_single(lab_a, w, h, mean_filter_kernel, params.gaussian_sigma);
+    let s_b = spectral_residual_single(lab_b, w, h, mean_filter_kernel, params.gaussian_sigma);
     let n = w * h;
-    (0..n).map(|i| (s_l[i] + s_a[i] + s_b[i]) / 3.0).collect()
+    let l_weight = params.l_weight.max(0.0);
+    let a_weight = params.a_weight.max(0.0);
+    let b_weight = params.b_weight.max(0.0);
+    let weight_sum = (l_weight + a_weight + b_weight).max(1e-12);
+    let mut out: Vec<f64> = (0..n)
+        .map(|i| (s_l[i] * l_weight + s_a[i] * a_weight + s_b[i] * b_weight) / weight_sum)
+        .collect();
+    if (params.post_gamma - 1.0).abs() > 1e-12 {
+        let gamma = params.post_gamma.max(1e-6);
+        for v in &mut out {
+            *v = v.clamp(0.0, 1.0).powf(gamma);
+        }
+    }
+    out
 }

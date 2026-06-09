@@ -23,6 +23,8 @@ pub struct Params {
     pub dct: DctParams,
     pub background: BackgroundParams,
     #[serde(default)]
+    pub subject_prior: SubjectPriorParams,
+    #[serde(default)]
     pub impression: ImpressionParams,
 }
 
@@ -38,11 +40,14 @@ pub struct Weights {
     pub lab_grad: f64,
     pub spectral: f64,
     pub global_light: f64,
-    pub global_sat: f64,
+    pub global_lab_a: f64,
+    pub global_lab_b: f64,
     pub local_light: f64,
-    pub local_sat: f64,
+    pub local_lab_a: f64,
+    pub local_lab_b: f64,
     pub background_lab: f64,
     pub background_fg_confidence: f64,
+    pub subject_prior: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,7 +60,8 @@ pub struct FusionParams {
 #[derive(Debug, Deserialize)]
 pub struct GlobalResidualParams {
     pub light: RobustCenterParams,
-    pub sat: RobustCenterParams,
+    pub lab_a: RobustCenterParams,
+    pub lab_b: RobustCenterParams,
 }
 
 /// 稳健亮度/饱和度中心估计参数
@@ -169,57 +175,113 @@ impl Default for ImpressionParams {
 }
 
 // =============================================================================
-// Background 参数
+// Background 参数（三阶段管线: 色域切分 + BFS 连通 + 软 mask）
 // =============================================================================
 
 #[derive(Debug, Deserialize)]
 pub struct BackgroundParams {
-    /// 边界采样 band 宽度（像素），默认 3
-    #[serde(default = "default_border_band")]
-    pub border_band: u32,
-    /// 低端 trim 百分位，默认 10.0
-    #[serde(default = "default_bg_trim_low")]
-    pub trim_low: f64,
-    /// 高端 trim 百分位，默认 90.0
-    #[serde(default = "default_bg_trim_high")]
-    pub trim_high: f64,
-    /// trimmed_mean 混合系数，默认 0.7
-    #[serde(default = "default_bg_trimmed_mean_weight")]
-    pub trimmed_mean_weight: f64,
-    /// median 混合系数，默认 0.3
-    #[serde(default = "default_bg_median_weight")]
-    pub median_weight: f64,
-    /// 连通性参数
     #[serde(default)]
-    pub connectedness: BackgroundConnectednessParams,
+    pub partition: ColorPartitionParams,
+    #[serde(default)]
+    pub morphology: MorphologyParams,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(default)]
-pub struct BackgroundConnectednessParams {
-    /// BFS 距离阈值 = bg_max_dist × dist_threshold_factor，默认 1.5
-    pub dist_threshold_factor: f64,
-    /// mask blur sigma（0=不 blur），默认 2.0
-    pub blur_sigma: f32,
-    /// 前景置信度 strength，默认 0.85
-    pub strength: f64,
+pub struct ColorPartitionParams {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_max_depth")]
+    pub max_depth: usize,
+    #[serde(default = "default_max_clusters")]
+    pub max_clusters: usize,
+    #[serde(default = "default_variance_threshold")]
+    pub variance_threshold: f64,
+    #[serde(default = "default_min_cluster_area_ratio")]
+    pub min_cluster_area_ratio: f64,
+    #[serde(default = "default_border_band")]
+    pub border_band: u32,
+    #[serde(default = "default_bg_score_threshold")]
+    pub bg_score_threshold: f64,
+    #[serde(default = "default_bg_connect_threshold")]
+    pub bg_connect_threshold: f64,
+    #[serde(default = "default_max_bg_ratio")]
+    pub max_bg_ratio: f64,
 }
 
-impl Default for BackgroundConnectednessParams {
+impl Default for ColorPartitionParams {
     fn default() -> Self {
         Self {
-            dist_threshold_factor: 1.5,
-            blur_sigma: 2.0,
-            strength: 0.85,
+            enabled: true,
+            max_depth: 5,
+            max_clusters: 16,
+            variance_threshold: 0.1,
+            min_cluster_area_ratio: 0.01,
+            border_band: 3,
+            bg_score_threshold: 0.55,
+            bg_connect_threshold: 0.08,
+            max_bg_ratio: 0.85,
         }
     }
 }
 
+fn default_true() -> bool { true }
+fn default_max_depth() -> usize { 5 }
+fn default_max_clusters() -> usize { 16 }
+fn default_variance_threshold() -> f64 { 0.1 }
+fn default_min_cluster_area_ratio() -> f64 { 0.01 }
 fn default_border_band() -> u32 { 3 }
-fn default_bg_trim_low() -> f64 { 10.0 }
-fn default_bg_trim_high() -> f64 { 90.0 }
-fn default_bg_trimmed_mean_weight() -> f64 { 0.7 }
-fn default_bg_median_weight() -> f64 { 0.3 }
+fn default_bg_score_threshold() -> f64 { 0.55 }
+fn default_bg_connect_threshold() -> f64 { 0.08 }
+fn default_max_bg_ratio() -> f64 { 0.85 }
+fn default_open_radius() -> u32 { 2 }
+fn default_close_radius() -> u32 { 8 }
+fn default_erode_radius() -> u32 { 3 }
+
+// Note: open_radius/close_radius/erode_radius live in MorphologyParams, not ColorPartitionParams.
+// These helpers serve MorphologyParams::default().
+
+#[derive(Debug, Deserialize)]
+pub struct MorphologyParams {
+    #[serde(default = "default_open_radius")]
+    pub open_radius: u32,
+    #[serde(default = "default_close_radius")]
+    pub close_radius: u32,
+    #[serde(default = "default_erode_radius")]
+    pub erode_radius: u32,
+}
+
+impl Default for MorphologyParams {
+    fn default() -> Self {
+        Self { open_radius: 2, close_radius: 8, erode_radius: 3 }
+    }
+}
+
+// =============================================================================
+// Subject Prior 参数
+// =============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct SubjectPriorParams {
+    #[serde(default = "default_center_x")]
+    pub center_x: f64,
+    #[serde(default = "default_center_y")]
+    pub center_y: f64,
+    #[serde(default = "default_radius_x")]
+    pub radius_x: f64,
+    #[serde(default = "default_radius_y")]
+    pub radius_y: f64,
+}
+
+impl Default for SubjectPriorParams {
+    fn default() -> Self {
+        Self { center_x: 0.5, center_y: 0.55, radius_x: 0.35, radius_y: 0.45 }
+    }
+}
+
+fn default_center_x() -> f64 { 0.5 }
+fn default_center_y() -> f64 { 0.55 }
+fn default_radius_x() -> f64 { 0.35 }
+fn default_radius_y() -> f64 { 0.45 }
 
 /// 校验 filter 配置：互斥检查 + 值域检查
 pub fn validate_filter(filter: &FilterParams) -> Result<(), anyhow::Error> {
