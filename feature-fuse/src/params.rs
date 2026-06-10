@@ -26,9 +26,11 @@ pub struct Params {
     pub subject_prior: SubjectPriorParams,
     #[serde(default)]
     pub impression: ImpressionParams,
+    #[serde(default)]
+    pub dynamic_weights: DynamicWeightsConfig,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct PercentileParams {
     pub low: f64,
     pub high: f64,
@@ -48,6 +50,189 @@ pub struct Weights {
     pub background_mask_morph: f64,
     pub background_fg_confidence: f64,
     pub subject_prior: f64,
+}
+
+// =============================================================================
+// Dynamic Feature Weights 配置
+// =============================================================================
+
+/// 每个特征的动态权重开关
+#[derive(Debug, Deserialize, Clone)]
+pub struct FeatureDynamicConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for FeatureDynamicConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+/// 各特征动态权重开关（12 个特征）
+#[derive(Debug, Deserialize, Clone)]
+pub struct DynamicWeightsPerFeature {
+    #[serde(default)]
+    pub dct: FeatureDynamicConfig,
+    #[serde(default)]
+    pub lab_grad: FeatureDynamicConfig,
+    #[serde(default)]
+    pub spectral: FeatureDynamicConfig,
+    #[serde(default)]
+    pub global_light: FeatureDynamicConfig,
+    #[serde(default)]
+    pub global_lab_a: FeatureDynamicConfig,
+    #[serde(default)]
+    pub global_lab_b: FeatureDynamicConfig,
+    #[serde(default)]
+    pub local_light: FeatureDynamicConfig,
+    #[serde(default)]
+    pub local_lab_a: FeatureDynamicConfig,
+    #[serde(default)]
+    pub local_lab_b: FeatureDynamicConfig,
+    #[serde(default = "default_dw_per_feat_disabled")]
+    pub background_mask_morph: FeatureDynamicConfig,
+    #[serde(default = "default_dw_per_feat_disabled")]
+    pub background_fg_confidence: FeatureDynamicConfig,
+    #[serde(default = "default_dw_per_feat_disabled")]
+    pub subject_prior: FeatureDynamicConfig,
+}
+
+impl Default for DynamicWeightsPerFeature {
+    fn default() -> Self {
+        Self {
+            dct: FeatureDynamicConfig::default(),
+            lab_grad: FeatureDynamicConfig::default(),
+            spectral: FeatureDynamicConfig::default(),
+            global_light: FeatureDynamicConfig::default(),
+            global_lab_a: FeatureDynamicConfig::default(),
+            global_lab_b: FeatureDynamicConfig::default(),
+            local_light: FeatureDynamicConfig::default(),
+            local_lab_a: FeatureDynamicConfig::default(),
+            local_lab_b: FeatureDynamicConfig::default(),
+            background_mask_morph: FeatureDynamicConfig { enabled: false },
+            background_fg_confidence: FeatureDynamicConfig { enabled: false },
+            subject_prior: FeatureDynamicConfig { enabled: false },
+        }
+    }
+}
+
+fn default_dw_per_feat_disabled() -> FeatureDynamicConfig {
+    FeatureDynamicConfig { enabled: false }
+}
+
+/// stat_mix: 方差/范围/峰度三项在显著度分数中的权重
+#[derive(Debug, Deserialize, Clone)]
+pub struct StatMixParams {
+    #[serde(default = "default_dw_variance_mix")]
+    pub variance: f64,
+    #[serde(default = "default_dw_range_mix")]
+    pub range: f64,
+    #[serde(default = "default_dw_peakiness_mix")]
+    pub peakiness: f64,
+}
+
+impl Default for StatMixParams {
+    fn default() -> Self {
+        Self {
+            variance: 0.45,
+            range: 0.35,
+            peakiness: 0.20,
+        }
+    }
+}
+
+fn default_dw_variance_mix() -> f64 {
+    0.45
+}
+fn default_dw_range_mix() -> f64 {
+    0.35
+}
+fn default_dw_peakiness_mix() -> f64 {
+    0.20
+}
+
+/// 动态特征权重完整配置
+#[derive(Debug, Deserialize, Clone)]
+pub struct DynamicWeightsConfig {
+    /// 是否启用动态权重；false 时行为与旧版完全一致
+    #[serde(default = "default_dw_enabled")]
+    pub enabled: bool,
+    /// multiplier 下限
+    #[serde(default = "default_dw_min_multiplier")]
+    pub min_multiplier: f64,
+    /// multiplier 上限
+    #[serde(default = "default_dw_max_multiplier")]
+    pub max_multiplier: f64,
+    /// 方差参考值
+    #[serde(default = "default_dw_variance_ref")]
+    pub variance_ref: f64,
+    /// 范围参考值
+    #[serde(default = "default_dw_range_ref")]
+    pub range_ref: f64,
+    /// 峰度参考值
+    #[serde(default = "default_dw_peakiness_ref")]
+    pub peakiness_ref: f64,
+    /// 防止除零的 epsilon
+    #[serde(default = "default_dw_eps")]
+    pub eps: f64,
+    /// 三项统计量在显著度分数中的混合权重
+    #[serde(default)]
+    pub stat_mix: StatMixParams,
+    /// percentile clip 参数（用于方差计算前的截断）
+    #[serde(default = "default_dw_percentile")]
+    pub percentile: PercentileParams,
+    /// 各特征动态权重开关
+    #[serde(default)]
+    pub per_feature: DynamicWeightsPerFeature,
+}
+
+impl Default for DynamicWeightsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_multiplier: 0.35,
+            max_multiplier: 1.80,
+            variance_ref: 0.05,
+            range_ref: 0.65,
+            peakiness_ref: 4.0,
+            eps: 1e-6,
+            stat_mix: StatMixParams::default(),
+            percentile: PercentileParams {
+                low: 2.0,
+                high: 98.0,
+            },
+            per_feature: DynamicWeightsPerFeature::default(),
+        }
+    }
+}
+
+fn default_dw_enabled() -> bool {
+    false
+}
+fn default_dw_min_multiplier() -> f64 {
+    0.35
+}
+fn default_dw_max_multiplier() -> f64 {
+    1.80
+}
+fn default_dw_variance_ref() -> f64 {
+    0.05
+}
+fn default_dw_range_ref() -> f64 {
+    0.65
+}
+fn default_dw_peakiness_ref() -> f64 {
+    4.0
+}
+fn default_dw_eps() -> f64 {
+    1e-6
+}
+fn default_dw_percentile() -> PercentileParams {
+    PercentileParams {
+        low: 2.0,
+        high: 98.0,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -236,6 +421,48 @@ fn default_soft_blur() -> u32 {
 fn default_fg_confidence_sharpen_radius() -> u32 {
     1
 }
+fn default_grad_stop() -> f64 {
+    0.35
+}
+fn default_dct_stop() -> f64 {
+    0.45
+}
+fn default_local_light_stop() -> f64 {
+    0.40
+}
+fn default_spectral_stop() -> f64 {
+    0.50
+}
+fn default_color_threshold() -> f64 {
+    0.45
+}
+fn default_barrier_color_relax_threshold() -> f64 {
+    0.92
+}
+fn default_protect_strength() -> f64 {
+    0.75
+}
+fn default_protect_p_low() -> f64 {
+    70.0
+}
+fn default_protect_p_high() -> f64 {
+    99.0
+}
+fn default_protect_grad_weight() -> f64 {
+    0.30
+}
+fn default_protect_dct_weight() -> f64 {
+    0.25
+}
+fn default_protect_spectral_weight() -> f64 {
+    0.15
+}
+fn default_protect_local_light_weight() -> f64 {
+    0.15
+}
+fn default_protect_local_sat_weight() -> f64 {
+    0.15
+}
 
 #[derive(Debug, Deserialize)]
 pub struct BackgroundParams {
@@ -245,6 +472,65 @@ pub struct BackgroundParams {
     pub morphology: MorphologyParams,
     #[serde(default)]
     pub soft_mask: SoftMaskParams,
+    #[serde(default)]
+    pub flood_barrier: BackgroundFloodBarrierParams,
+}
+
+/// 背景 flood fill 的前景结构阻断与保护参数。
+#[derive(Debug, Deserialize)]
+pub struct BackgroundFloodBarrierParams {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_grad_stop")]
+    pub grad_stop: f64,
+    #[serde(default = "default_dct_stop")]
+    pub dct_stop: f64,
+    #[serde(default = "default_local_light_stop")]
+    pub local_light_stop: f64,
+    #[serde(default = "default_spectral_stop")]
+    pub spectral_stop: f64,
+    #[serde(default = "default_color_threshold")]
+    pub color_threshold: f64,
+    #[serde(default = "default_barrier_color_relax_threshold")]
+    pub barrier_color_relax_threshold: f64,
+    #[serde(default = "default_protect_strength")]
+    pub protect_strength: f64,
+    #[serde(default = "default_protect_p_low")]
+    pub protect_p_low: f64,
+    #[serde(default = "default_protect_p_high")]
+    pub protect_p_high: f64,
+    #[serde(default = "default_protect_grad_weight")]
+    pub protect_grad_weight: f64,
+    #[serde(default = "default_protect_dct_weight")]
+    pub protect_dct_weight: f64,
+    #[serde(default = "default_protect_spectral_weight")]
+    pub protect_spectral_weight: f64,
+    #[serde(default = "default_protect_local_light_weight")]
+    pub protect_local_light_weight: f64,
+    #[serde(default = "default_protect_local_sat_weight")]
+    pub protect_local_sat_weight: f64,
+}
+
+impl Default for BackgroundFloodBarrierParams {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            grad_stop: 0.35,
+            dct_stop: 0.45,
+            local_light_stop: 0.40,
+            spectral_stop: 0.50,
+            color_threshold: 0.45,
+            barrier_color_relax_threshold: 0.92,
+            protect_strength: 0.75,
+            protect_p_low: 70.0,
+            protect_p_high: 99.0,
+            protect_grad_weight: 0.30,
+            protect_dct_weight: 0.25,
+            protect_spectral_weight: 0.15,
+            protect_local_light_weight: 0.15,
+            protect_local_sat_weight: 0.15,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

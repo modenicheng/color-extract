@@ -8,7 +8,33 @@
 
 use std::collections::VecDeque;
 
-use crate::params::{BackgroundParams, SoftMaskParams, SubjectPriorParams};
+use crate::params::{
+    BackgroundFloodBarrierParams, BackgroundParams, SoftMaskParams, SubjectPriorParams,
+};
+
+pub struct BackgroundFeatureInputs<'a> {
+    pub dct: &'a [f64],
+    pub lab_grad: &'a [f64],
+    pub spectral: &'a [f64],
+    pub local_light: &'a [f64],
+    /// 使用 local LAB a/b residual 的合成图作为局部色度/饱和度保护代理。
+    pub local_sat: &'a [f64],
+}
+
+pub struct BackgroundDiagnostics {
+    pub bg_candidate: Vec<f64>,
+    pub bg_barrier: Vec<f64>,
+    pub bg_mask_before_protect: Vec<f64>,
+    pub foreground_protect: Vec<f64>,
+    pub bg_mask_after_protect: Vec<f64>,
+    pub fg_confidence: Vec<f64>,
+}
+
+pub struct BackgroundFeatureResult {
+    pub bg_mask_morph: Vec<f64>,
+    pub fg_confidence: Vec<f64>,
+    pub diagnostics: BackgroundDiagnostics,
+}
 
 // =============================================================================
 // Phase 1: Color Partition via Median Cut
@@ -375,16 +401,88 @@ fn recompute_cluster_stats(cluster: &mut Cluster, lab_l: &[f64], lab_a: &[f64], 
 // Phase 2: BFS Connectivity + Morphology
 // =============================================================================
 
+fn build_flood_barrier(
+    features: &BackgroundFeatureInputs,
+    border_bg: &[f64],
+    params: &BackgroundFloodBarrierParams,
+) -> Vec<f64> {
+    let n = features.lab_grad.len();
+    if !params.enabled {
+        return vec![0.0; n];
+    }
+
+    (0..n)
+        .map(|i| {
+            if border_bg.get(i).copied().unwrap_or(0.0) >= params.barrier_color_relax_threshold {
+                return 0.0;
+            }
+            let stop = features.lab_grad.get(i).copied().unwrap_or(0.0) > params.grad_stop
+                || features.dct.get(i).copied().unwrap_or(0.0) > params.dct_stop
+                || features.local_light.get(i).copied().unwrap_or(0.0) > params.local_light_stop
+                || features.spectral.get(i).copied().unwrap_or(0.0) > params.spectral_stop;
+            if stop {
+                1.0
+            } else {
+                0.0
+            }
+        })
+        .collect()
+}
+
+fn build_bg_candidate(border_bg: &[f64], color_threshold: f64) -> Vec<f64> {
+    border_bg
+        .iter()
+        .map(|&v| if v > color_threshold { 1.0 } else { 0.0 })
+        .collect()
+}
+
+fn build_foreground_protect(
+    features: &BackgroundFeatureInputs,
+    params: &BackgroundFloodBarrierParams,
+) -> Vec<f64> {
+    let n = features.lab_grad.len();
+    if n == 0 {
+        return Vec::new();
+    }
+
+    let raw: Vec<f64> = (0..n)
+        .map(|i| {
+            features.lab_grad.get(i).copied().unwrap_or(0.0) * params.protect_grad_weight
+                + features.dct.get(i).copied().unwrap_or(0.0) * params.protect_dct_weight
+                + features.spectral.get(i).copied().unwrap_or(0.0) * params.protect_spectral_weight
+                + features.local_light.get(i).copied().unwrap_or(0.0)
+                    * params.protect_local_light_weight
+                + features.local_sat.get(i).copied().unwrap_or(0.0)
+                    * params.protect_local_sat_weight
+        })
+        .collect();
+
+    percentile_normalize_local(&raw, params.protect_p_low, params.protect_p_high)
+}
+
+fn apply_foreground_protect(bg_mask: &[f64], protect: &[f64], protect_strength: f64) -> Vec<f64> {
+    bg_mask
+        .iter()
+        .enumerate()
+        .map(|(i, &bg)| {
+            let p = protect.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            (bg * (1.0 - protect_strength.clamp(0.0, 1.0) * p)).clamp(0.0, 1.0)
+        })
+        .collect()
+}
+
 /// BFS flood-fill 从边界扩散，连通区域标记为背景
 fn bfs_connected_bg(
-    raw_mask: &[f64],
+    _raw_mask: &[f64],
+    bg_candidate: &[f64],
+    bg_barrier: &[f64],
     lab_l: &[f64],
     lab_a: &[f64],
     lab_b: &[f64],
     w: u32,
     h: u32,
     border_band: u32,
-    bg_score_threshold: f64,
+    _bg_score_threshold: f64,
     bg_connect_threshold: f64,
 ) -> Vec<f64> {
     let n = (w * h) as usize;
@@ -393,7 +491,6 @@ fn bfs_connected_bg(
     }
 
     let band = border_band.max(1);
-    let score_threshold = bg_score_threshold;
     let connect_threshold = bg_connect_threshold;
     let mut visited = vec![false; n];
     let mut mask = vec![0.0; n];
@@ -404,7 +501,7 @@ fn bfs_connected_bg(
     for y in 0..band.min(h) {
         for x in 0..w {
             let i = (y * w + x) as usize;
-            if raw_mask[i] >= score_threshold {
+            if bg_candidate[i] >= 0.5 {
                 visited[i] = true;
                 mask[i] = 1.0;
                 queue.push_back((x, y));
@@ -415,7 +512,7 @@ fn bfs_connected_bg(
     for y in (h.saturating_sub(band))..h {
         for x in 0..w {
             let i = (y * w + x) as usize;
-            if !visited[i] && raw_mask[i] >= score_threshold {
+            if !visited[i] && bg_candidate[i] >= 0.5 {
                 visited[i] = true;
                 mask[i] = 1.0;
                 queue.push_back((x, y));
@@ -426,7 +523,7 @@ fn bfs_connected_bg(
     for y in band..h.saturating_sub(band) {
         for x in 0..band.min(w) {
             let i = (y * w + x) as usize;
-            if !visited[i] && raw_mask[i] >= score_threshold {
+            if !visited[i] && bg_candidate[i] >= 0.5 {
                 visited[i] = true;
                 mask[i] = 1.0;
                 queue.push_back((x, y));
@@ -434,7 +531,7 @@ fn bfs_connected_bg(
         }
         for x in (w.saturating_sub(band))..w {
             let i = (y * w + x) as usize;
-            if !visited[i] && raw_mask[i] >= score_threshold {
+            if !visited[i] && bg_candidate[i] >= 0.5 {
                 visited[i] = true;
                 mask[i] = 1.0;
                 queue.push_back((x, y));
@@ -456,6 +553,9 @@ fn bfs_connected_bg(
             }
             let ni = (ny as u32 * w + nx as u32) as usize;
             if visited[ni] {
+                continue;
+            }
+            if bg_candidate[ni] < 0.5 || bg_barrier[ni] >= 0.5 {
                 continue;
             }
             let d_l = (lab_l[ni] - cl) / 100.0;
@@ -826,11 +926,23 @@ pub fn compute_background_features(
     lab_b: &[f64],
     w: u32,
     h: u32,
+    feature_inputs: &BackgroundFeatureInputs,
     params: &BackgroundParams,
-) -> (Vec<f64>, Vec<f64>) {
+) -> BackgroundFeatureResult {
     let n = (w * h) as usize;
     if n == 0 {
-        return (vec![], vec![]);
+        return BackgroundFeatureResult {
+            bg_mask_morph: vec![],
+            fg_confidence: vec![],
+            diagnostics: BackgroundDiagnostics {
+                bg_candidate: vec![],
+                bg_barrier: vec![],
+                bg_mask_before_protect: vec![],
+                foreground_protect: vec![],
+                bg_mask_after_protect: vec![],
+                fg_confidence: vec![],
+            },
+        };
     }
 
     let partition = &params.partition;
@@ -838,7 +950,18 @@ pub fn compute_background_features(
 
     // 禁用 → 全部视为前景
     if !partition.enabled {
-        return (vec![1.0; n], vec![1.0; n]);
+        return BackgroundFeatureResult {
+            bg_mask_morph: vec![1.0; n],
+            fg_confidence: vec![1.0; n],
+            diagnostics: BackgroundDiagnostics {
+                bg_candidate: vec![0.0; n],
+                bg_barrier: vec![0.0; n],
+                bg_mask_before_protect: vec![0.0; n],
+                foreground_protect: vec![0.0; n],
+                bg_mask_after_protect: vec![0.0; n],
+                fg_confidence: vec![1.0; n],
+            },
+        };
     }
 
     // Phase 1: Median Cut partition
@@ -875,10 +998,25 @@ pub fn compute_background_features(
         partition.border_band,
     );
 
-    // Phase 2: Generate mask → BFS → morphology
+    // Phase 2: Generate mask → barrier-aware BFS → morphology
     let raw_mask = clusters_to_bg_mask(&clusters, n, partition.bg_score_threshold);
+    let border_bg = border_background_likelihood(
+        lab_l,
+        lab_a,
+        lab_b,
+        w,
+        h,
+        partition.border_band,
+        &params.soft_mask,
+    );
+    let bg_candidate = build_bg_candidate(&border_bg, params.flood_barrier.color_threshold);
+    let bg_barrier = build_flood_barrier(feature_inputs, &border_bg, &params.flood_barrier);
+    let foreground_protect = build_foreground_protect(feature_inputs, &params.flood_barrier);
+
     let bfs_mask = bfs_connected_bg(
         &raw_mask,
+        &bg_candidate,
+        &bg_barrier,
         lab_l,
         lab_a,
         lab_b,
@@ -923,16 +1061,17 @@ pub fn compute_background_features(
         morph_mask
     };
 
-    // Phase 3: Soft mask refinement
-    let border_bg = border_background_likelihood(
-        lab_l,
-        lab_a,
-        lab_b,
-        w,
-        h,
-        partition.border_band,
-        &params.soft_mask,
-    );
+    let bg_mask_before_protect = morph_mask.clone();
+    let morph_mask = if params.flood_barrier.enabled {
+        apply_foreground_protect(
+            &morph_mask,
+            &foreground_protect,
+            params.flood_barrier.protect_strength,
+        )
+    } else {
+        morph_mask
+    };
+    let bg_mask_after_protect = morph_mask.clone();
 
     // Blend hard morph mask with soft border_bg
     let soft_bg = soft_background_from_partition(&morph_mask, &border_bg);
@@ -966,7 +1105,20 @@ pub fn compute_background_features(
             .collect()
     };
 
-    (bg_mask_morph, fg_confidence)
+    let diagnostics = BackgroundDiagnostics {
+        bg_candidate,
+        bg_barrier,
+        bg_mask_before_protect,
+        foreground_protect,
+        bg_mask_after_protect,
+        fg_confidence: fg_confidence.clone(),
+    };
+
+    BackgroundFeatureResult {
+        bg_mask_morph,
+        fg_confidence,
+        diagnostics,
+    }
 }
 
 /// Compute subject prior (Gaussian center bias) for every pixel.

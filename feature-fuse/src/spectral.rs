@@ -2,7 +2,7 @@
 // 频谱残差显著性检测 (复用 spectral-residual 算法)
 // =============================================================================
 
-use rustfft::{FftPlanner, num_complex::Complex};
+use rustfft::{num_complex::Complex, FftPlanner};
 use std::sync::Arc;
 
 fn fft2d_real(data: &mut [Complex<f64>], w: usize, h: usize, forward: bool) {

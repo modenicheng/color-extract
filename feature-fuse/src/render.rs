@@ -250,6 +250,12 @@ fn shorten_feature_name(name: &str) -> String {
         "local_lab_b_residual" => "L-LabB",
         "background_mask_morph" => "BG Mask",
         "background_fg_confidence" => "BG Conf",
+        "bg_candidate" => "BG Cand",
+        "bg_barrier" => "BG Barr",
+        "bg_mask_before_protect" => "BG Pre",
+        "foreground_protect" => "FG Prot",
+        "bg_mask_after_protect" => "BG Post",
+        "fg_confidence" => "FG Conf",
         "subject_prior" => "Subj Prior",
         other => other,
     }

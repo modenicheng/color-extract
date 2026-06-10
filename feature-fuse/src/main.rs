@@ -4,6 +4,7 @@
 
 mod background;
 mod dct;
+mod dynamic_weights;
 mod fusion;
 mod gradient;
 mod html;
@@ -17,15 +18,20 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
-use crate::background::{compute_background_features, compute_subject_prior};
+use crate::background::{
+    compute_background_features, compute_subject_prior, BackgroundFeatureInputs,
+};
 use crate::dct::compute_dct_complexity;
+use crate::dynamic_weights::{
+    compute_dynamic_weights, diagnostics_to_json, diagnostics_to_table,
+};
 use crate::fusion::{
     apply_filter, composite_with_hybrid, hybrid_fusion, kmeans_impression_color,
     percentile_normalize, percentile_normalize_unit_feature, weights_to_array,
 };
 use crate::gradient::compute_lab_gradient;
 use crate::image::load_image;
-use crate::params::{Params, load_params, validate_filter};
+use crate::params::{load_params, validate_filter, Params};
 use crate::residual::{
     compute_global_lab_a_residual, compute_global_lab_b_residual, compute_global_light_residual,
     compute_local_lab_a_residual, compute_local_lab_b_residual, compute_local_light_residual,
@@ -256,14 +262,29 @@ fn process_one_image(
 
     // ── (8+9) Background features (三阶段管线: 色域切分 + BFS + 软 mask) ──
     let t0 = std::time::Instant::now();
-    let (bg_mask_raw, bg_fg_raw) = compute_background_features(
+    let local_lab_ab: Vec<f64> = loc_a_norm
+        .iter()
+        .zip(loc_b_norm.iter())
+        .map(|(&a, &b)| a.max(b))
+        .collect();
+    let bg_feature_inputs = BackgroundFeatureInputs {
+        dct: &dct_norm,
+        lab_grad: &lab_grad_norm,
+        spectral: &sr_norm,
+        local_light: &loc_l_norm,
+        local_sat: &local_lab_ab,
+    };
+    let bg_result = compute_background_features(
         &data.lab_l,
         &data.lab_a,
         &data.lab_b,
         w,
         h,
+        &bg_feature_inputs,
         &params.background,
     );
+    let bg_mask_raw = bg_result.bg_mask_morph;
+    let bg_fg_raw = bg_result.fg_confidence;
     let bg_mask_norm = percentile_normalize_unit_feature(&bg_mask_raw, p_low, p_high);
     let bg_fg_norm = percentile_normalize_unit_feature(&bg_fg_raw, p_low, p_high);
     save_gray_png(
@@ -277,6 +298,42 @@ fn process_one_image(
         w,
         h,
         &out_dir.join("background_fg_confidence.png"),
+    )?;
+    save_gray_png(
+        &bg_result.diagnostics.bg_candidate,
+        w,
+        h,
+        &out_dir.join("bg_candidate.png"),
+    )?;
+    save_gray_png(
+        &bg_result.diagnostics.bg_barrier,
+        w,
+        h,
+        &out_dir.join("bg_barrier.png"),
+    )?;
+    save_gray_png(
+        &bg_result.diagnostics.bg_mask_before_protect,
+        w,
+        h,
+        &out_dir.join("bg_mask_before_protect.png"),
+    )?;
+    save_gray_png(
+        &bg_result.diagnostics.foreground_protect,
+        w,
+        h,
+        &out_dir.join("foreground_protect.png"),
+    )?;
+    save_gray_png(
+        &bg_result.diagnostics.bg_mask_after_protect,
+        w,
+        h,
+        &out_dir.join("bg_mask_after_protect.png"),
+    )?;
+    save_gray_png(
+        &bg_result.diagnostics.fg_confidence,
+        w,
+        h,
+        &out_dir.join("fg_confidence.png"),
     )?;
     let t_bg = t0.elapsed();
 
@@ -332,9 +389,29 @@ fn process_one_image(
         "subject_prior",
     ];
 
-    // ── 从 YAML 提取权重数组 ──
-    let add_w = weights_to_array(&params.weights_add);
-    let mul_w = weights_to_array(&params.weights_mul);
+    // ── 从 YAML 提取 base weight 数组 ──
+    let base_add = weights_to_array(&params.weights_add);
+    let base_mul = weights_to_array(&params.weights_mul);
+
+    // ── 计算动态权重（若 dynamic_weights.enabled == true）──
+    let (add_w, mul_w) = if params.dynamic_weights.enabled {
+        let result = compute_dynamic_weights(
+            &features,
+            &base_add,
+            &base_mul,
+            &params.dynamic_weights,
+        );
+        // 输出诊断表格到控制台
+        let table = diagnostics_to_table(&result.diagnostics);
+        println!("\n  ── Dynamic Weights ──\n{table}\n");
+        // 保存 JSON 诊断文件
+        let json_str = diagnostics_to_json(&result.diagnostics);
+        std::fs::write(out_dir.join("dynamic_weights.json"), &json_str)
+            .context("write dynamic_weights.json")?;
+        (result.add_weights, result.mul_weights)
+    } else {
+        (base_add.clone(), base_mul.clone())
+    };
 
     // ── Hybrid Fusion ──
     let (fused_add, fused_mul, fused_hybrid) = hybrid_fusion(
@@ -411,11 +488,28 @@ fn process_one_image(
     println!("    impression color: {ic_hex} (k-means cluster, k={k}, iter={max_iter})");
 
     // ── Contact Sheet ──
-    let feat_slices: Vec<(&str, &[f64])> = feature_names
+    let mut feat_slices: Vec<(&str, &[f64])> = feature_names
         .iter()
         .zip(features.iter())
         .map(|(&n, &f)| (n, f))
         .collect();
+    feat_slices.extend_from_slice(&[
+        ("bg_candidate", &bg_result.diagnostics.bg_candidate),
+        ("bg_barrier", &bg_result.diagnostics.bg_barrier),
+        (
+            "bg_mask_before_protect",
+            &bg_result.diagnostics.bg_mask_before_protect,
+        ),
+        (
+            "foreground_protect",
+            &bg_result.diagnostics.foreground_protect,
+        ),
+        (
+            "bg_mask_after_protect",
+            &bg_result.diagnostics.bg_mask_after_protect,
+        ),
+        ("fg_confidence", &bg_result.diagnostics.fg_confidence),
+    ]);
     let fused_slices: [(&str, &[f64]); 6] = [
         ("fused_add", &fused_add),
         ("fused_softmul", &fused_mul),
