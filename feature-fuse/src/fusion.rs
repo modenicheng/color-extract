@@ -212,14 +212,17 @@ fn sq_dist(a: &[f64; 3], b: &[f64; 3]) -> f64 {
     dx * dx + dy * dy + dz * dz
 }
 
-/// 使用 k-means++ 聚类从显著像素中提取印象色。
+/// 使用加权 k-means++ 聚类从过滤后的显著像素中提取印象色。
+///
+/// `filtered` 既作为二值门控（>0 才参与聚类），其值本身也作为该像素的权重。
+/// 像素的 FiltHyb 值越高，对质心位置的牵引力越大。
 ///
 /// 采样方式由 `impression.sample_method` 控制:
 ///   - "stride": 间隔规律网格采样，按 sample_stride 在 2D 网格上每隔 stride 个像素选一个
 ///   - "all":    使用全部 filtered > 0 的像素（旧行为）
 ///
 /// k-means++ 初始化使用固定种子 `impression.seed`（默认 42），保证可复现。
-/// 返回像素数最多的簇的质心作为印象色。
+/// 簇得分 = weight_sum × count，得分最高的簇的质心作为印象色返回。
 pub fn kmeans_impression_color(
     rgb: &[[f64; 3]],
     filtered: &[f64],
@@ -230,27 +233,25 @@ pub fn kmeans_impression_color(
     let k = params.k;
     let max_iter = params.max_iter;
 
-    // ── 收集显著像素点 ──
-    let pts: Vec<[f64; 3]> = if params.sample_method == "stride" {
-        // 间隔规律网格采样: 每隔 stride 行/列取一个像素，仅取 filtered > 0 的
+    // ── 收集显著像素点（含原始索引，用于查权重）──
+    let (indices, pts): (Vec<usize>, Vec<[f64; 3]>) = if params.sample_method == "stride" {
         let stride = params.sample_stride.max(1);
+        let mut idxs = Vec::new();
         let mut sampled = Vec::new();
         for y in (0..h).step_by(stride) {
             for x in (0..w).step_by(stride) {
                 let idx = y * w + x;
                 if filtered[idx] > 0.0 {
+                    idxs.push(idx);
                     sampled.push(rgb[idx]);
                 }
             }
         }
-        sampled
+        (idxs, sampled)
     } else {
-        // "all" — 使用全部 filtered > 0 的像素
-        rgb.iter()
-            .zip(filtered.iter())
-            .filter(|&(_, &w)| w > 0.0)
-            .map(|(&c, _)| c)
-            .collect()
+        let idxs: Vec<usize> = (0..rgb.len()).filter(|&i| filtered[i] > 0.0).collect();
+        let pts_all: Vec<[f64; 3]> = idxs.iter().map(|&i| rgb[i]).collect();
+        (idxs, pts_all)
     };
 
     let n = pts.len();
@@ -258,12 +259,18 @@ pub fn kmeans_impression_color(
         return [0.0; 3];
     }
     if n <= k {
-        // 点数不足 k，直接返回均值
+        // 点数不足 k，返回加权均值
         let mut s = [0.0; 3];
-        for &p in &pts {
-            s[0] += p[0];
-            s[1] += p[1];
-            s[2] += p[2];
+        let mut w_sum = 0.0;
+        for &i in &indices {
+            let wi = filtered[i];
+            s[0] += rgb[i][0] * wi;
+            s[1] += rgb[i][1] * wi;
+            s[2] += rgb[i][2] * wi;
+            w_sum += wi;
+        }
+        if w_sum > 0.0 {
+            return [s[0] / w_sum, s[1] / w_sum, s[2] / w_sum];
         }
         return [s[0] / n as f64, s[1] / n as f64, s[2] / n as f64];
     }
@@ -310,11 +317,11 @@ pub fn kmeans_impression_color(
         centroids.push(pts[idx]);
     }
 
-    // ── Lloyd 迭代 ──
+    // ── Lloyd 迭代（加权质心更新）──
     let mut assign = vec![0usize; n];
 
     for _ in 0..max_iter {
-        // Assignment: 每个点归入最近质心
+        // Assignment: 每个点归入最近质心（基于 RGB 距离，无加权）
         let mut changed = false;
         for i in 0..n {
             let mut best = 0usize;
@@ -335,33 +342,44 @@ pub fn kmeans_impression_color(
             break;
         }
 
-        // Update: 重新计算质心
+        // Update: 加权质心（每像素权重 = filtered[原始索引]）
         let mut sums = vec![[0.0; 3]; k];
-        let mut counts = vec![0u32; k];
+        let mut weight_sums = vec![0.0f64; k];
         for i in 0..n {
             let c = assign[i];
-            sums[c][0] += pts[i][0];
-            sums[c][1] += pts[i][1];
-            sums[c][2] += pts[i][2];
-            counts[c] += 1;
+            let pt_idx = indices[i];
+            let w_i = filtered[pt_idx];
+            sums[c][0] += pts[i][0] * w_i;
+            sums[c][1] += pts[i][1] * w_i;
+            sums[c][2] += pts[i][2] * w_i;
+            weight_sums[c] += w_i;
         }
         for j in 0..k {
-            if counts[j] > 0 {
+            if weight_sums[j] > 0.0 {
                 centroids[j] = [
-                    sums[j][0] / counts[j] as f64,
-                    sums[j][1] / counts[j] as f64,
-                    sums[j][2] / counts[j] as f64,
+                    sums[j][0] / weight_sums[j],
+                    sums[j][1] / weight_sums[j],
+                    sums[j][2] / weight_sums[j],
                 ];
             }
         }
     }
 
-    // 找最大簇
+    // 加权得分：weight_sum × count，选得分最高的簇
     let mut counts = vec![0u32; k];
-    for &a in &assign {
-        counts[a] += 1;
+    let mut weight_sums = vec![0.0f64; k];
+    for i in 0..n {
+        let c = assign[i];
+        counts[c] += 1;
+        weight_sums[c] += filtered[indices[i]];
     }
-    let best = (0..k).max_by_key(|&j| counts[j]).unwrap();
+    let best = (0..k)
+        .max_by(|&a, &b| {
+            let sa = weight_sums[a] * counts[a] as f64;
+            let sb = weight_sums[b] * counts[b] as f64;
+            sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap();
     centroids[best]
 }
 
