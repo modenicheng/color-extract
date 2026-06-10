@@ -81,6 +81,7 @@ pub fn make_contact_sheet_full(
     fused: &[(&str, &[f64])],
     extra_rgb: &[(&str, &[[f64; 3]])],
     impression_swatch: Option<[f64; 3]>,
+    weighted_swatch: Option<[f64; 3]>,
     w: u32,
     h: u32,
     layout: &ContactSheetParams,
@@ -143,6 +144,11 @@ pub fn make_contact_sheet_full(
         if let Some(color) = impression_swatch {
             thumbs.push(make_swatch_thumb(color, cell_w, cell_h));
             labels.push("Imp Color".to_string());
+        }
+        // 加权聚类预测色（Imp Color 右侧）
+        if let Some(color) = weighted_swatch {
+            thumbs.push(make_swatch_thumb(color, cell_w, cell_h));
+            labels.push("Pred Color".to_string());
         }
         // 行尾补齐到 cols 列
         pad_to_align(&mut thumbs, &mut labels, cols, &empty_thumb);
@@ -275,6 +281,7 @@ fn fuse_display_name(name: &str) -> String {
         "fused_softmul" => "Fuse Mult",
         "fused_hybrid" => "Fuse Hybrid",
         "fused_original_hybrid" => "Orig×Hyb",
+        "fused_original_hybrid_nothreshold" => "Orig×Hyb(NT)",
         "fused_add_filtered" => "Filt Add",
         "fused_softmul_filtered" => "Filt Mult",
         "fused_hybrid_filtered" => "Filt Hybrid",

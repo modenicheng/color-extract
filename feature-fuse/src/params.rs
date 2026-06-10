@@ -30,6 +30,8 @@ pub struct Params {
     pub dynamic_weights: DynamicWeightsConfig,
     #[serde(default)]
     pub saturation: SaturationParams,
+    #[serde(default)]
+    pub direct_blend: DirectBlendParams,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -380,6 +382,27 @@ pub struct FilterParams {
 // =============================================================================
 // 印象色 K-Means 聚类参数
 // =============================================================================
+
+// =============================================================================
+// 直接融合参数（无阈值过滤的 Hybrid × 原图 + 加权聚类色）
+// =============================================================================
+
+/// 控制无阈值融合与加权聚类的归一化行为
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct DirectBlendParams {
+    /// 是否在乘原图/加权聚类前对 hybrid 做归一化
+    #[serde(default)]
+    pub normalize_before: bool,
+}
+
+impl Default for DirectBlendParams {
+    fn default() -> Self {
+        Self {
+            normalize_before: false,
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]

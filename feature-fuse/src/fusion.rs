@@ -161,6 +161,29 @@ pub fn composite_with_hybrid(rgb: &[[f64; 3]], filtered: &[f64]) -> Vec<[f64; 3]
         .collect()
 }
 
+/// 将原图 RGB 与未过滤的 FuseHybrid 逐像素相乘（无阈值过滤）。
+///
+/// 通过 `normalize_before` 控制在乘法前是否对 hybrid 做 [0,1] 归一化。
+/// 与 `composite_with_hybrid` 不同，这里接受的是未经过滤（全像素都保留）的 hybrid。
+pub fn composite_with_hybrid_direct(
+    rgb: &[[f64; 3]],
+    hybrid: &[f64],
+    normalize_before: bool,
+) -> Vec<[f64; 3]> {
+    let weights: Vec<f64> = if normalize_before {
+        let min = hybrid.iter().cloned().fold(f64::MAX, f64::min);
+        let max = hybrid.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let range = (max - min).max(1e-12);
+        hybrid.iter().map(|&v| ((v - min) / range).clamp(0.0, 1.0)).collect()
+    } else {
+        hybrid.iter().map(|&v| v.clamp(0.0, 1.0)).collect()
+    };
+    rgb.iter()
+        .zip(weights.iter())
+        .map(|(&px, &w)| [px[0] * w, px[1] * w, px[2] * w])
+        .collect()
+}
+
 // =============================================================================
 // K-Means++ 印象色提取
 // =============================================================================
@@ -340,6 +363,180 @@ pub fn kmeans_impression_color(
     }
     let best = (0..k).max_by_key(|&j| counts[j]).unwrap();
     centroids[best]
+}
+
+/// 加权聚类：对所有原图像素做 k-means，使用 FuseHybrid 作为每像素权重。
+///
+/// 与 `kmeans_impression_color` 不同：
+///   - 不使用阈值过滤（所有像素都参与聚类）
+///   - 每个像素的权重 = hybrid 值（可配是否先归一化）
+///   - 聚类更新时使用加权质心
+///   - 输出「权 × 簇大小」最大的簇的质心（而非纯粹像素数最多的簇）
+///
+/// 采样方式由 `impression.sample_method` 控制（同印象色聚类）。
+pub fn kmeans_weighted_color(
+    rgb: &[[f64; 3]],
+    hybrid: &[f64],
+    w: usize,
+    h: usize,
+    params: &ImpressionParams,
+    normalize_before: bool,
+) -> ([f64; 3], f64) {
+    let k = params.k;
+    let max_iter = params.max_iter;
+
+    // ── 归一化 hybrid 权重 ──
+    let weights: Vec<f64> = if normalize_before {
+        let min = hybrid.iter().cloned().fold(f64::MAX, f64::min);
+        let max = hybrid.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let range = (max - min).max(1e-12);
+        hybrid.iter().map(|&v| ((v - min) / range).clamp(0.0, 1.0)).collect()
+    } else {
+        hybrid.iter().map(|&v| v.clamp(0.0, 1.0)).collect()
+    };
+
+    // ── 采样（stride 或 all）──
+    let (indices, pts): (Vec<usize>, Vec<[f64; 3]>) = if params.sample_method == "stride" {
+        let stride = params.sample_stride.max(1);
+        let mut idxs = Vec::new();
+        let mut pts_sampled = Vec::new();
+        for y in (0..h).step_by(stride) {
+            for x in (0..w).step_by(stride) {
+                let idx = y * w + x;
+                if weights[idx] > 0.0 {
+                    idxs.push(idx);
+                    pts_sampled.push(rgb[idx]);
+                }
+            }
+        }
+        (idxs, pts_sampled)
+    } else {
+        let idxs: Vec<usize> = (0..rgb.len()).filter(|&i| weights[i] > 0.0).collect();
+        let pts_all: Vec<[f64; 3]> = idxs.iter().map(|&i| rgb[i]).collect();
+        (idxs, pts_all)
+    };
+
+    let n = pts.len();
+    if n == 0 {
+        return ([0.0; 3], 0.0);
+    }
+    if n <= k {
+        let mut s = [0.0; 3];
+        let mut w_sum = 0.0;
+        for &i in &indices {
+            s[0] += rgb[i][0] * weights[i];
+            s[1] += rgb[i][1] * weights[i];
+            s[2] += rgb[i][2] * weights[i];
+            w_sum += weights[i];
+        }
+        if w_sum > 0.0 {
+            return ([s[0] / w_sum, s[1] / w_sum, s[2] / w_sum], w_sum * n as f64);
+        }
+        return ([s[0] / n as f64, s[1] / n as f64, s[2] / n as f64], 0.0);
+    }
+
+    // ── K-means++ 初始化 ──
+    let mut rng = Lcg64::new(params.seed);
+    let mut centroids = Vec::with_capacity(k);
+    centroids.push(pts[rng.next_f64() as usize % n]);
+
+    let mut min_d2 = vec![f64::MAX; n];
+    for _ in 1..k {
+        let last = &centroids[centroids.len() - 1];
+        let total: f64 = pts
+            .iter()
+            .zip(min_d2.iter_mut())
+            .map(|(p, md)| {
+                let d2 = sq_dist(p, last);
+                *md = (*md).min(d2);
+                *md
+            })
+            .sum();
+
+        if total <= 0.0 {
+            while centroids.len() < k {
+                centroids.push(centroids[0]);
+            }
+            break;
+        }
+
+        let mut r = rng.next_f64() * total;
+        let mut idx = n - 1;
+        for i in 0..n {
+            r -= min_d2[i];
+            if r <= 0.0 {
+                idx = i;
+                break;
+            }
+        }
+        centroids.push(pts[idx]);
+    }
+
+    // ── Lloyd 迭代（加权质心更新）──
+    let mut assign = vec![0usize; n];
+    for _iter in 0..max_iter {
+        // Assignment: 无加权，归入最近质心
+        let mut changed = false;
+        for i in 0..n {
+            let mut best = 0usize;
+            let mut best_d = sq_dist(&pts[i], &centroids[0]);
+            for j in 1..k {
+                let d = sq_dist(&pts[i], &centroids[j]);
+                if d < best_d {
+                    best_d = d;
+                    best = j;
+                }
+            }
+            if assign[i] != best {
+                assign[i] = best;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+
+        // Update: 加权质心（每像素权重 = weights[原始索引]）
+        let mut sums = vec![[0.0; 3]; k];
+        let mut weight_sums = vec![0.0f64; k];
+        for i in 0..n {
+            let c = assign[i];
+            let pt_idx = indices[i];
+            let w_i = weights[pt_idx];
+            sums[c][0] += pts[i][0] * w_i;
+            sums[c][1] += pts[i][1] * w_i;
+            sums[c][2] += pts[i][2] * w_i;
+            weight_sums[c] += w_i;
+        }
+        for j in 0..k {
+            if weight_sums[j] > 0.0 {
+                centroids[j] = [
+                    sums[j][0] / weight_sums[j],
+                    sums[j][1] / weight_sums[j],
+                    sums[j][2] / weight_sums[j],
+                ];
+            }
+        }
+    }
+
+    // ── 计算每簇的「权 × 大小」得分 ──
+    let mut counts = vec![0u32; k];
+    let mut weight_sums = vec![0.0f64; k];
+    for i in 0..n {
+        let c = assign[i];
+        counts[c] += 1;
+        weight_sums[c] += weights[indices[i]];
+    }
+    // 得分 = 总权重 × 像素数（权越大、簇越大 → 得分越高）
+    let best = (0..k)
+        .max_by(|&a, &b| {
+            let sa = weight_sums[a] * counts[a] as f64;
+            let sb = weight_sums[b] * counts[b] as f64;
+            sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap();
+    let score = weight_sums[best] * counts[best] as f64;
+    (centroids[best], score)
 }
 
 // =============================================================================

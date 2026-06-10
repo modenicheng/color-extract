@@ -26,8 +26,9 @@ use crate::dynamic_weights::{
     compute_dynamic_weights, diagnostics_to_json, diagnostics_to_table,
 };
 use crate::fusion::{
-    apply_filter, composite_with_hybrid, hybrid_fusion, kmeans_impression_color,
-    percentile_normalize, percentile_normalize_unit_feature, weights_to_array,
+    apply_filter, composite_with_hybrid, composite_with_hybrid_direct, hybrid_fusion,
+    kmeans_impression_color, kmeans_weighted_color, percentile_normalize,
+    percentile_normalize_unit_feature, weights_to_array,
 };
 use crate::gradient::compute_lab_gradient;
 use crate::image::load_image;
@@ -535,6 +536,38 @@ fn process_one_image(
         &out_dir.join("fused_original_hybrid.png"),
     )?;
 
+    // ── Original × Hybrid（无阈值，直接乘）──
+    let composite_nothresh = composite_with_hybrid_direct(
+        &data.rgb,
+        &fused_hybrid,
+        params.direct_blend.normalize_before,
+    );
+    save_rgb_png(
+        &composite_nothresh,
+        w,
+        h,
+        &out_dir.join("fused_original_hybrid_nothreshold.png"),
+    )?;
+
+    // ── 加权聚类色：对原图做加权 k-means，Hybrid 为权重 ──
+    let (weighted_color, wc_score) = kmeans_weighted_color(
+        &data.rgb,
+        &fused_hybrid,
+        w as usize,
+        h as usize,
+        &params.impression,
+        params.direct_blend.normalize_before,
+    );
+    let wc_hex = format!(
+        "#{:02x}{:02x}{:02x}",
+        (weighted_color[0].clamp(0.0, 1.0) * 255.0) as u8,
+        (weighted_color[1].clamp(0.0, 1.0) * 255.0) as u8,
+        (weighted_color[2].clamp(0.0, 1.0) * 255.0) as u8,
+    );
+    println!(
+        "    weighted cluster: {wc_hex} (score={wc_score:.0})"
+    );
+
     // ── 印象色：k-means++ 聚类，取最大簇 ──
     let impression_color = kmeans_impression_color(
         &data.rgb,
@@ -593,8 +626,12 @@ fn process_one_image(
         &data.rgb,
         &feat_slices,
         &fused_slices,
-        &[("fused_original_hybrid", composite_rgb.as_slice())],
+        &[
+            ("fused_original_hybrid", composite_rgb.as_slice()),
+            ("fused_original_hybrid_nothreshold", composite_nothresh.as_slice()),
+        ],
         Some(impression_color),
+        Some(weighted_color),
         w,
         h,
         &params.contact_sheet,
