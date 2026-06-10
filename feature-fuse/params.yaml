@@ -433,7 +433,7 @@ fusion:
   #   gamma = 1 → 无变化（线性映射）。
   #   gamma > 1 → 整体压暗，亮区更亮、暗区更暗，对比度增强。
   # 建议范围: 0.3~2.0，默认 1.0 不做额外调整。
-  gamma: 1.7
+  gamma: 2.0
 
   # 软乘法 baseline。防止某特征值为 0 时乘积归零。
   # 实际公式中用 (ε + (1-ε)*feat) 替代原始 feat。
@@ -603,8 +603,8 @@ impression:
 dynamic_weights:
   enabled: true
 
-  min_multiplier: 0.45
-  max_multiplier: 1.80
+  min_multiplier: 0.35
+  max_multiplier: 1.85
 
   variance_ref: 0.05
   range_ref: 0.65

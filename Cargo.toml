@@ -1,5 +1,5 @@
 [workspace]
-members = ["dct-extract", "lab-gradient", "dct-viz", "spectral-residual", "residual-viz", "global-residual", "img-compare", "feature-fuse", "impression-color-extract"]
+members = ["dct-extract", "lab-gradient", "dct-viz", "spectral-residual", "residual-viz", "global-residual", "img-compare", "feature-fuse", "impression-color-extract", "color-segment"]
 resolver = "2"
 
 [package]
