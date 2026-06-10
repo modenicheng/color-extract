@@ -189,6 +189,10 @@ fn refine_impl(
         params,
     );
 
+    if !params.enable_edge_split {
+        return (merged_regions, merged_labels);
+    }
+
     // ===== Phase B — Split =====
     let (final_regions, final_labels) = perform_split(
         &merged_regions,
@@ -994,6 +998,7 @@ mod tests {
             min_region_area: 0,
             edge_merge_strength: 0.05,
             edge_split_strength: 0.4,
+            enable_edge_split: true,
             ..SegmentParams::default()
         }
     }
@@ -1180,6 +1185,32 @@ mod tests {
             "internal strong edge should split region (got {} regions)",
             result_regions.len()
         );
+    }
+
+    #[test]
+    fn test_default_does_not_split_horizontal_artifact() {
+        let w = 8u32;
+        let h = 6u32;
+        let total = (w * h) as usize;
+
+        let labels: Vec<Option<usize>> = vec![Some(0); total];
+        let regions = regions_from_labels(&labels, w, 1);
+
+        let mut edge = vec![0.0; total];
+        for x in 0..w as usize {
+            edge[2 * w as usize + x] = 1.0;
+            edge[4 * w as usize + x] = 1.0;
+        }
+
+        let params = SegmentParams::default();
+        let (result_regions, result_labels) = refine(&regions, &labels, &edge, w, h, &params);
+
+        assert_eq!(
+            result_regions.len(),
+            1,
+            "default config should not split one region into horizontal stripes"
+        );
+        assert!(result_labels.iter().all(|l| l == &Some(0)));
     }
 
     // ===== Test: no-split — uniform region → unchanged =====

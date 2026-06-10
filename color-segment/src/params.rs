@@ -76,6 +76,14 @@ pub struct SegmentParams {
     #[serde(default = "default_edge_split_strength")]
     pub edge_split_strength: f64,
 
+    /// 边缘 gamma 压缩。小于 1 会抬高中等边缘，使线稿/色块边界更突出
+    #[serde(default = "default_edge_gamma")]
+    pub edge_gamma: f64,
+
+    /// 是否启用强内部边缘分裂。默认关闭，避免背景渐变/压缩纹理被切成条纹。
+    #[serde(default = "default_enable_edge_split")]
+    pub enable_edge_split: bool,
+
     /// 边缘引导合并强度
     #[serde(default = "default_edge_merge_strength")]
     pub edge_merge_strength: f64,
@@ -141,6 +149,14 @@ fn default_edge_split_strength() -> f64 {
     0.4
 }
 
+fn default_edge_gamma() -> f64 {
+    0.65
+}
+
+fn default_enable_edge_split() -> bool {
+    false
+}
+
 fn default_edge_merge_strength() -> f64 {
     0.05
 }
@@ -180,6 +196,8 @@ impl Default for SegmentParams {
             min_region_area: default_min_region_area(),
             edge_threshold: default_edge_threshold(),
             edge_split_strength: default_edge_split_strength(),
+            edge_gamma: default_edge_gamma(),
+            enable_edge_split: default_enable_edge_split(),
             edge_merge_strength: default_edge_merge_strength(),
             color_merge_distance: default_color_merge_distance(),
             small_region_color_distance: default_small_region_color_distance(),
@@ -212,6 +230,8 @@ mod tests {
         assert_eq!(p.min_region_area, 50);
         assert_eq!(p.edge_threshold, 0.15);
         assert_eq!(p.edge_split_strength, 0.4);
+        assert_eq!(p.edge_gamma, 0.65);
+        assert!(!p.enable_edge_split);
         assert_eq!(p.edge_merge_strength, 0.05);
         assert_eq!(p.color_merge_distance, 8.0);
         assert_eq!(p.small_region_color_distance, 24.0);
@@ -248,6 +268,8 @@ mod tests {
         assert_eq!(p.min_region_area, 50);
         assert_eq!(p.edge_threshold, 0.15);
         assert_eq!(p.edge_split_strength, 0.4);
+        assert_eq!(p.edge_gamma, 0.65);
+        assert!(!p.enable_edge_split);
         assert_eq!(p.edge_merge_strength, 0.05);
         assert_eq!(p.color_merge_distance, 8.0);
         assert_eq!(p.small_region_color_distance, 24.0);

@@ -816,10 +816,11 @@ fn main() -> Result<()> {
     println!("color-segment — preprocess_max_dim={max_dim}, stem={stem}");
     println!("rayon threads: {}", rayon::current_num_threads());
     println!(
-        "params: max_clusters={}, min_region={}, edge_thr={:.2}, color_merge_delta={:.1}",
+        "params: max_clusters={}, min_region={}, edge_thr={:.2}, edge_gamma={:.2}, color_merge_delta={:.1}",
         params.max_clusters,
         params.min_region_area,
         params.edge_threshold,
+        params.edge_gamma,
         params.color_merge_distance
     );
 
@@ -885,7 +886,9 @@ fn main() -> Result<()> {
                 img_to_jpeg_uri(&orig_dyn).with_context(|| "encoding original image to JPEG")?;
 
             // 执行分割 (调用库的 segment())
+            let segment_started = Instant::now();
             let result = segment(&rgb, &params).with_context(|| format!("segmenting {}", fname))?;
+            let segment_ms = segment_started.elapsed().as_secs_f64() * 1000.0;
 
             let n_regions = result.regions.len();
             let w = result.width;
@@ -931,11 +934,12 @@ fn main() -> Result<()> {
                 .collect();
 
             println!(
-                "[{:?}] finished {} → {} regions in {:.2}s",
+                "[{:?}] finished {} → {} regions, segment={:.1}ms total={:.1}ms",
                 std::thread::current().id(),
                 fname,
                 n_regions,
-                started.elapsed().as_secs_f64()
+                segment_ms,
+                started.elapsed().as_secs_f64() * 1000.0
             );
 
             Ok(ImageResult {
