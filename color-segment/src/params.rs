@@ -44,6 +44,10 @@ impl Default for ColorSpace {
 /// 加载方式：`serde_yaml::from_str::<SegmentParams>(&yaml)`。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SegmentParams {
+    /// 预处理最大边长 — 输入图像缩放后宽高均不超过该值；小图保持原尺寸
+    #[serde(default = "default_preprocess_max_dim")]
+    pub preprocess_max_dim: u32,
+
     /// 最大聚类数 — 控制分割粒度上限
     #[serde(default = "default_max_clusters")]
     pub max_clusters: usize,
@@ -76,6 +80,14 @@ pub struct SegmentParams {
     #[serde(default = "default_edge_merge_strength")]
     pub edge_merge_strength: f64,
 
+    /// 相邻区域颜色合并阈值（CIELAB ΔE，越大越容易合并相近颜色）
+    #[serde(default = "default_color_merge_distance")]
+    pub color_merge_distance: f64,
+
+    /// 小区域吸收到邻接区域时允许的最大 CIELAB ΔE
+    #[serde(default = "default_small_region_color_distance")]
+    pub small_region_color_distance: f64,
+
     /// 分割使用的色彩空间
     #[serde(default = "default_color_space")]
     pub color_space: ColorSpace,
@@ -96,6 +108,10 @@ pub struct SegmentParams {
 // =============================================================================
 // 默认值辅助函数
 // =============================================================================
+
+fn default_preprocess_max_dim() -> u32 {
+    512
+}
 
 fn default_max_clusters() -> usize {
     32
@@ -129,6 +145,14 @@ fn default_edge_merge_strength() -> f64 {
     0.05
 }
 
+fn default_color_merge_distance() -> f64 {
+    8.0
+}
+
+fn default_small_region_color_distance() -> f64 {
+    24.0
+}
+
 fn default_color_space() -> ColorSpace {
     ColorSpace::Lab
 }
@@ -148,6 +172,7 @@ fn default_smooth_radius() -> u32 {
 impl Default for SegmentParams {
     fn default() -> Self {
         Self {
+            preprocess_max_dim: default_preprocess_max_dim(),
             max_clusters: default_max_clusters(),
             max_depth: default_max_depth(),
             variance_threshold: default_variance_threshold(),
@@ -156,6 +181,8 @@ impl Default for SegmentParams {
             edge_threshold: default_edge_threshold(),
             edge_split_strength: default_edge_split_strength(),
             edge_merge_strength: default_edge_merge_strength(),
+            color_merge_distance: default_color_merge_distance(),
+            small_region_color_distance: default_small_region_color_distance(),
             color_space: default_color_space(),
             merge_small_regions: default_merge_small_regions(),
             smooth_boundaries: default_smooth_boundaries(),
@@ -177,6 +204,7 @@ mod tests {
     fn test_default_values() {
         let p = SegmentParams::default();
 
+        assert_eq!(p.preprocess_max_dim, 512);
         assert_eq!(p.max_clusters, 32);
         assert_eq!(p.max_depth, 8);
         assert_eq!(p.variance_threshold, 1.0);
@@ -185,6 +213,8 @@ mod tests {
         assert_eq!(p.edge_threshold, 0.15);
         assert_eq!(p.edge_split_strength, 0.4);
         assert_eq!(p.edge_merge_strength, 0.05);
+        assert_eq!(p.color_merge_distance, 8.0);
+        assert_eq!(p.small_region_color_distance, 24.0);
         assert_eq!(p.color_space, ColorSpace::Lab);
         assert!(p.merge_small_regions);
         assert!(p.smooth_boundaries);
@@ -203,10 +233,11 @@ mod tests {
     /// YAML 部分覆盖：仅指定部分字段，其余应保持默认
     #[test]
     fn test_partial_yaml_override() {
-        let yaml = "max_clusters: 16\ncolor_space: Oklab\n";
+        let yaml = "preprocess_max_dim: 768\nmax_clusters: 16\ncolor_space: Oklab\n";
         let p: SegmentParams = serde_yaml::from_str(yaml).expect("parse partial YAML");
 
         // 覆盖的字段
+        assert_eq!(p.preprocess_max_dim, 768);
         assert_eq!(p.max_clusters, 16);
         assert_eq!(p.color_space, ColorSpace::Oklab);
 
@@ -218,6 +249,8 @@ mod tests {
         assert_eq!(p.edge_threshold, 0.15);
         assert_eq!(p.edge_split_strength, 0.4);
         assert_eq!(p.edge_merge_strength, 0.05);
+        assert_eq!(p.color_merge_distance, 8.0);
+        assert_eq!(p.small_region_color_distance, 24.0);
         assert!(p.merge_small_regions);
         assert!(p.smooth_boundaries);
         assert_eq!(p.smooth_radius, 1);

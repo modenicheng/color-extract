@@ -15,14 +15,16 @@
 //   1. 读 params.yaml → SegmentParams
 //   2. 遍历 imgs/ 下所有图片 (jpg/jpeg/png)
 //   3. 每张图: 缩放 → color_segment::segment() → HTML 生成
-//   4. 输出到 output/{stem}_{name}.html
+//   4. 输出到 output/color-segment/{stem}_{name}.html
 
 use anyhow::{Context, Result};
 use image::{DynamicImage, GenericImageView, ImageReader, RgbImage};
+use rayon::prelude::*;
 use std::io::Cursor;
+use std::time::Instant;
 
-use color_segment::{segment, SegmentResult};
 use color_segment::params::SegmentParams;
+use color_segment::{SegmentResult, segment};
 
 // =============================================================================
 // Base64 — inline implementation (no external crate available)
@@ -157,6 +159,69 @@ fn gen_edge_heatmap(result: &SegmentResult) -> image::GrayImage {
         }
     }
     img
+}
+
+// =============================================================================
+// 切分图 PNG 渲染 — 原图 + 半透明区域着色 + 边界线
+// =============================================================================
+
+/// 将分割结果渲染为一张合成 PNG：
+///   1. 原图打底
+///   2. 每个区域以调色盘颜色 45% 透明度叠加
+///   3. 区域边界画 1px 暗色线
+fn render_segmented_png(
+    original: &RgbImage,
+    labels: &[Option<usize>],
+    palette: &color_segment::Palette,
+    regions: &[color_segment::Region],
+    width: u32,
+    height: u32,
+) -> RgbImage {
+    let w = width;
+    let h = height;
+    let pal = &palette.colors;
+    let mut out = RgbImage::new(w, h);
+
+    // 每个像素：原图底色 + 45% 区域色叠加
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y * w + x) as usize;
+            let orig = original.get_pixel(x, y).0;
+
+            let over = match labels[idx] {
+                Some(rid) if rid < regions.len() => {
+                    let cid = regions[rid].cluster_id;
+                    if cid < pal.len() { pal[cid] } else { [0, 0, 0] }
+                }
+                _ => [0, 0, 0],
+            };
+            // 45% alpha blend: out = over * 0.45 + orig * 0.55
+            let r = (over[0] as f32 * 0.45 + orig[0] as f32 * 0.55).round() as u8;
+            let g = (over[1] as f32 * 0.45 + orig[1] as f32 * 0.55).round() as u8;
+            let b = (over[2] as f32 * 0.45 + orig[2] as f32 * 0.55).round() as u8;
+            out.put_pixel(x, y, image::Rgb([r, g, b]));
+        }
+    }
+
+    // 边界线：相邻像素标签不同 → 画深色线
+    let boundary_color = [20u8, 20u8, 20u8];
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y * w + x) as usize;
+            let cur = labels[idx];
+            if cur.is_none() {
+                continue;
+            }
+            let is_boundary = (x > 0 && labels[idx - 1] != cur)
+                || (x + 1 < w && labels[idx + 1] != cur)
+                || (y > 0 && labels[idx - w as usize] != cur)
+                || (y + 1 < h && labels[idx + w as usize] != cur);
+            if is_boundary {
+                out.put_pixel(x, y, image::Rgb(boundary_color));
+            }
+        }
+    }
+    out
 }
 
 // =============================================================================
@@ -556,30 +621,206 @@ fn escape_html(s: &str) -> String {
 }
 
 // =============================================================================
+// 总览 HTML — 汇总所有分割结果
+// =============================================================================
+
+/// 单张图片的处理结果元数据，用于生成总览页面。
+struct ImageResult {
+    name_stem: String,
+    fname: String,
+    width: u32,
+    height: u32,
+    n_regions: usize,
+    html_path: String,        // 详情页文件名
+    seg_png_path: String,     // 切分图 PNG 文件名
+    top_colors: Vec<[u8; 3]>, // 面积最大的几个颜色
+}
+
+/// 生成总览 HTML：每张图片一个缩略卡片，链接到详情页。
+fn generate_overview_html(
+    results: &[ImageResult],
+    stem: &str,
+    _out_dir: &std::path::Path,
+) -> String {
+    let mut h = String::with_capacity(32_000);
+    h.push_str(&format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Color Segment — Overview ({stem})</title>
+<style>
+:root {{
+    --bg: #0f0f1a;
+    --card: #1a1a2e;
+    --text: #e0e0e0;
+    --text-dim: #888;
+    --accent: #6c63ff;
+    --border: #2a2a4a;
+}}
+* {{ margin:0; padding:0; box-sizing:border-box; }}
+body {{
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    padding: 24px;
+}}
+header {{
+    text-align: center;
+    padding: 24px;
+    border-bottom: 2px solid var(--border);
+    margin-bottom: 28px;
+}}
+header h1 {{ font-size: 1.4rem; color: var(--accent); margin-bottom: 6px; }}
+header .meta {{ font-size: 0.75rem; color: var(--text-dim); }}
+.grid {{
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 20px;
+}}
+.card {{
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    transition: border-color 0.15s;
+}}
+.card:hover {{ border-color: var(--accent); }}
+.card a {{ text-decoration: none; color: inherit; display: block; }}
+.card-thumb {{
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
+    display: block;
+    background: #111;
+}}
+.card-info {{
+    padding: 12px 14px;
+}}
+.card-name {{
+    font-size: 0.8rem;
+    font-weight: 500;
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}}
+.card-meta {{
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}}
+.card-swatches {{
+    display: flex;
+    gap: 3px;
+    margin-top: 7px;
+}}
+.card-swatches span {{
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    border: 1px solid rgba(255,255,255,0.1);
+    flex-shrink: 0;
+}}
+footer {{
+    text-align: center;
+    padding: 18px;
+    color: var(--text-dim);
+    font-size: 0.65rem;
+    border-top: 1px solid var(--border);
+    margin-top: 24px;
+}}
+</style>
+</head>
+<body>
+<header>
+<h1>Color Segment Overview</h1>
+<div class="meta">{n} images — stem: {stem}</div>
+</header>
+<div class="grid">
+"#,
+        stem = stem,
+        n = results.len(),
+    ));
+
+    for r in results {
+        let escaped = escape_html(&r.name_stem);
+        let seg_png_rel = format!("{}_{}_seg.png", stem, r.name_stem);
+        let html_rel = format!("{}_{}.html", stem, r.name_stem);
+
+        // 前 5 个主色 swatches
+        let mut swatches = String::new();
+        for c in r.top_colors.iter().take(5) {
+            swatches.push_str(&format!(
+                r#"<span style="background:#{:02X}{:02X}{:02X}"></span>"#,
+                c[0], c[1], c[2]
+            ));
+        }
+
+        h.push_str(&format!(
+            r#"<div class="card">
+<a href="{html_rel}">
+<img class="card-thumb" src="{seg_png_rel}" alt="{escaped}" loading="lazy">
+<div class="card-info">
+<div class="card-name">{escaped}</div>
+<div class="card-meta">
+<span>{w}×{h}</span>
+<span>{n} regions</span>
+</div>
+<div class="card-swatches">{swatches}</div>
+</div>
+</a>
+</div>
+"#,
+            html_rel = html_rel,
+            seg_png_rel = seg_png_rel,
+            escaped = escaped,
+            w = r.width,
+            h = r.height,
+            n = r.n_regions,
+            swatches = swatches,
+        ));
+    }
+
+    h.push_str("</div>\n<footer>Generated by color-segment</footer>\n</body>\n</html>\n");
+    h
+}
+
+// =============================================================================
 // main() — CLI 入口
 // =============================================================================
 
 fn main() -> Result<()> {
-    // ===== CLI 参数解析 =====
-    let max_dim: u32 = std::env::args()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(512);
-
-    let stem = std::env::args()
-        .nth(2)
-        .unwrap_or_else(|| "segment".to_string());
-
     // ===== 加载参数 YAML =====
     let yaml_str = std::fs::read_to_string("color-segment/params.yaml")
         .with_context(|| "reading color-segment/params.yaml")?;
     let params: SegmentParams =
         serde_yaml::from_str(&yaml_str).with_context(|| "parsing params.yaml")?;
 
-    println!("color-segment — max_dim={max_dim}, stem={stem}");
+    // ===== CLI 参数解析 =====
+    let args: Vec<String> = std::env::args().collect();
+    let max_dim: u32 = args
+        .get(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(params.preprocess_max_dim)
+        .max(1);
+
+    let stem = args
+        .get(2)
+        .cloned()
+        .unwrap_or_else(|| "segment".to_string());
+
+    println!("color-segment — preprocess_max_dim={max_dim}, stem={stem}");
+    println!("rayon threads: {}", rayon::current_num_threads());
     println!(
-        "params: max_clusters={}, min_region={}, edge_thr={:.2}",
-        params.max_clusters, params.min_region_area, params.edge_threshold
+        "params: max_clusters={}, min_region={}, edge_thr={:.2}, color_merge_delta={:.1}",
+        params.max_clusters,
+        params.min_region_area,
+        params.edge_threshold,
+        params.color_merge_distance
     );
 
     // ===== 扫描 imgs/ 目录 =====
@@ -589,9 +830,7 @@ fn main() -> Result<()> {
     }
 
     let mut img_paths: Vec<std::path::PathBuf> = Vec::new();
-    for entry in
-        std::fs::read_dir(imgs_dir).with_context(|| "reading imgs/ directory")?
-    {
+    for entry in std::fs::read_dir(imgs_dir).with_context(|| "reading imgs/ directory")? {
         let entry = entry?;
         let path = entry.path();
         let ext = path
@@ -607,55 +846,134 @@ fn main() -> Result<()> {
     if img_paths.is_empty() {
         anyhow::bail!("no jpg/jpeg/png images found in imgs/");
     }
+    img_paths.sort();
 
     println!("Found {} image(s) in imgs/", img_paths.len());
 
-    // ===== 确保 output/ 存在 =====
-    let out_dir = std::path::Path::new("output");
+    // ===== 确保 output/color-segment/ 存在 =====
+    let out_dir = std::path::Path::new("output").join("color-segment");
     if !out_dir.exists() {
-        std::fs::create_dir(out_dir).with_context(|| "creating output/ directory")?;
+        std::fs::create_dir_all(&out_dir)
+            .with_context(|| "creating output/color-segment/ directory")?;
     }
 
-    // ===== 逐张处理 =====
-    for img_path in &img_paths {
-        let fname = img_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown");
-        let name_stem = img_path
-            .file_stem()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown");
+    // ===== 并行处理所有图片 =====
+    let results: Vec<Result<ImageResult>> = img_paths
+        .par_iter()
+        .map(|img_path| {
+            let fname = img_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+            let name_stem = img_path
+                .file_stem()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+            let started = Instant::now();
+            println!("[{:?}] processing {}", std::thread::current().id(), fname);
 
-        println!("Processing {}...", fname);
+            // 加载图片
+            let rgb =
+                load_image(img_path, max_dim).with_context(|| format!("loading {}", fname))?;
 
-        // 加载图片
-        let rgb = load_image(img_path, max_dim)
-            .with_context(|| format!("loading {}", fname))?;
+            // 保留一份原图用于切分图渲染（segment 会 move rgb）
+            let orig_for_png = rgb.clone();
 
-        // 原始图 JPEG base64 (在 segment 调用前编码，segment 不保留原始 RGB)
-        let orig_dyn = DynamicImage::ImageRgb8(rgb.clone());
-        let orig_uri =
-            img_to_jpeg_uri(&orig_dyn).with_context(|| "encoding original image to JPEG")?;
+            // 原始图 JPEG base64 (在 segment 调用前编码)
+            let orig_dyn = DynamicImage::ImageRgb8(rgb.clone());
+            let orig_uri =
+                img_to_jpeg_uri(&orig_dyn).with_context(|| "encoding original image to JPEG")?;
 
-        // 执行分割 (调用库的 segment())
-        let result = segment(&rgb, &params)
-            .with_context(|| format!("segmenting {}", fname))?;
+            // 执行分割 (调用库的 segment())
+            let result = segment(&rgb, &params).with_context(|| format!("segmenting {}", fname))?;
 
-        let n_regions = result.regions.len();
-        println!("  → got {n_regions} regions");
+            let n_regions = result.regions.len();
+            let w = result.width;
+            let h = result.height;
 
-        // 生成 HTML
-        let html = generate_html(&result, name_stem, &orig_uri);
+            // 渲染切分图 PNG
+            let seg_png = render_segmented_png(
+                &orig_for_png,
+                &result.labels,
+                &result.palette,
+                &result.regions,
+                w,
+                h,
+            );
+            let seg_png_path = out_dir.join(format!("{}_{}_seg.png", stem, name_stem));
+            seg_png
+                .save(&seg_png_path)
+                .with_context(|| format!("saving segmented PNG {}", seg_png_path.display()))?;
 
-        // 写入文件
-        let out_path = out_dir.join(format!("{}_{}.html", stem, name_stem));
-        std::fs::write(&out_path, html)
-            .with_context(|| format!("writing {}", out_path.display()))?;
-        println!("  → saved {}", out_path.display());
+            // 生成 HTML
+            let html = generate_html(&result, name_stem, &orig_uri);
+
+            // 写入 HTML
+            let html_path = out_dir.join(format!("{}_{}.html", stem, name_stem));
+            std::fs::write(&html_path, html)
+                .with_context(|| format!("writing {}", html_path.display()))?;
+
+            // 收集面积最大的 5 个主色
+            let mut indexed: Vec<(usize, &color_segment::Region)> =
+                result.regions.iter().enumerate().collect();
+            indexed.sort_by_key(|(_, r)| -(r.area as isize));
+            let top_colors: Vec<[u8; 3]> = indexed
+                .iter()
+                .take(5)
+                .map(|(_, r)| {
+                    let cid = r.cluster_id;
+                    if cid < result.palette.colors.len() {
+                        result.palette.colors[cid]
+                    } else {
+                        [128, 128, 128]
+                    }
+                })
+                .collect();
+
+            println!(
+                "[{:?}] finished {} → {} regions in {:.2}s",
+                std::thread::current().id(),
+                fname,
+                n_regions,
+                started.elapsed().as_secs_f64()
+            );
+
+            Ok(ImageResult {
+                name_stem: name_stem.to_string(),
+                fname: fname.to_string(),
+                width: w,
+                height: h,
+                n_regions,
+                html_path: format!("{}_{}.html", stem, name_stem),
+                seg_png_path: format!("{}_{}_seg.png", stem, name_stem),
+                top_colors,
+            })
+        })
+        .collect();
+
+    // 统一输出结果
+    let mut processed: Vec<ImageResult> = Vec::new();
+    for r in results {
+        match r {
+            Ok(img_res) => {
+                println!(
+                    "{} → {} regions → saved {} + {}",
+                    img_res.fname, img_res.n_regions, img_res.html_path, img_res.seg_png_path
+                );
+                processed.push(img_res);
+            }
+            Err(e) => eprintln!("ERROR: {e:#}"),
+        }
     }
 
-    println!("Done. {} image(s) processed.", img_paths.len());
+    // ===== 生成总览 HTML =====
+    let overview_html = generate_overview_html(&processed, &stem, &out_dir);
+    let overview_path = out_dir.join(format!("{}_overview.html", stem));
+    std::fs::write(&overview_path, overview_html)
+        .with_context(|| format!("writing overview {}", overview_path.display()))?;
+    println!("Overview → {}", overview_path.display());
+
+    println!("Done. {} image(s) processed.", processed.len());
     Ok(())
 }
 

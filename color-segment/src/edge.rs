@@ -55,6 +55,10 @@ pub fn detect_edges(
     let h = height as usize;
     let mut mag = vec![0.0_f64; n];
 
+    if w < 3 || h < 3 {
+        return vec![1.0; n];
+    }
+
     // ===== Step 2 — 3×3 Sobel on each LAB channel =====
     //
     // Gx = [[-1,  0,  1],      Gy = [[-1, -2, -1],
@@ -68,8 +72,7 @@ pub fn detect_edges(
             let i = y * w + x;
 
             // --- L-channel gradients ---
-            let gx_l = -lab[i - w - 1][0] + lab[i - w + 1][0]
-                - 2.0 * lab[i - 1][0]
+            let gx_l = -lab[i - w - 1][0] + lab[i - w + 1][0] - 2.0 * lab[i - 1][0]
                 + 2.0 * lab[i + 1][0]
                 - lab[i + w - 1][0]
                 + lab[i + w + 1][0];
@@ -79,8 +82,7 @@ pub fn detect_edges(
                 + lab[i + w + 1][0];
 
             // --- a-channel gradients ---
-            let gx_a = -lab[i - w - 1][1] + lab[i - w + 1][1]
-                - 2.0 * lab[i - 1][1]
+            let gx_a = -lab[i - w - 1][1] + lab[i - w + 1][1] - 2.0 * lab[i - 1][1]
                 + 2.0 * lab[i + 1][1]
                 - lab[i + w - 1][1]
                 + lab[i + w + 1][1];
@@ -90,8 +92,7 @@ pub fn detect_edges(
                 + lab[i + w + 1][1];
 
             // --- b-channel gradients ---
-            let gx_b = -lab[i - w - 1][2] + lab[i - w + 1][2]
-                - 2.0 * lab[i - 1][2]
+            let gx_b = -lab[i - w - 1][2] + lab[i - w + 1][2] - 2.0 * lab[i - 1][2]
                 + 2.0 * lab[i + 1][2]
                 - lab[i + w - 1][2]
                 + lab[i + w + 1][2];
@@ -245,6 +246,14 @@ mod tests {
             assert!((edges[y * (w as usize)] - 1.0).abs() < 1e-6);
             assert!((edges[y * (w as usize) + (w as usize) - 1] - 1.0).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn test_tiny_image_no_sobel_window() {
+        let params = SegmentParams::default();
+        let pixels = vec![[0.2, 0.3, 0.4]; 4];
+        let edges = detect_edges(&pixels, 2, 2, &params);
+        assert_eq!(edges, vec![1.0; 4]);
     }
 
     /// A sharp colour boundary (vertical split: red vs blue) must produce

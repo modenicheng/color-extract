@@ -292,21 +292,13 @@ pub fn extract_region_map(
                     sum_x[old_id] / areas[old_id] as f64,
                     sum_y[old_id] / areas[old_id] as f64,
                 ),
-                bbox: (
-                    min_x[old_id],
-                    min_y[old_id],
-                    max_x[old_id],
-                    max_y[old_id],
-                ),
+                bbox: (min_x[old_id], min_y[old_id], max_x[old_id], max_y[old_id]),
             });
         }
     }
 
     // ===== 构建像素级标签映射 (过滤后) =====
-    let labels: Vec<Option<usize>> = final_labels
-        .iter()
-        .map(|&old| old_to_new[old])
-        .collect();
+    let labels: Vec<Option<usize>> = final_labels.iter().map(|&old| old_to_new[old]).collect();
 
     RegionMap {
         labels,
@@ -340,7 +332,11 @@ mod tests {
         let indices = vec![0, 0, 0, 0];
         let result = extract_region_map(&indices, 2, 2, &relaxed_params());
 
-        assert_eq!(result.regions.len(), 1, "uniform image should produce 1 region");
+        assert_eq!(
+            result.regions.len(),
+            1,
+            "uniform image should produce 1 region"
+        );
         let r = &result.regions[0];
         assert_eq!(r.id, 0);
         assert_eq!(r.cluster_id, 0);
@@ -363,15 +359,15 @@ mod tests {
         // 0 1 0
         // 1 0 1
         // 0 1 0
-        let indices = vec![
-            0, 1, 0,
-            1, 0, 1,
-            0, 1, 0,
-        ];
+        let indices = vec![0, 1, 0, 1, 0, 1, 0, 1, 0];
         let result = extract_region_map(&indices, 3, 3, &relaxed_params());
 
         // 每个像素孤立 → 9 个区域
-        assert_eq!(result.regions.len(), 9, "3x3 checkerboard (4-connected) produces 9 isolated regions");
+        assert_eq!(
+            result.regions.len(),
+            9,
+            "3x3 checkerboard (4-connected) produces 9 isolated regions"
+        );
 
         // 所有区域面积 = 1
         for r in &result.regions {
@@ -389,11 +385,8 @@ mod tests {
         assert_eq!(ones, 4);
 
         // 验证标签: 每个像素都有唯一标签
-        let unique_labels: std::collections::HashSet<usize> = result
-            .labels
-            .iter()
-            .map(|l| l.unwrap())
-            .collect();
+        let unique_labels: std::collections::HashSet<usize> =
+            result.labels.iter().map(|l| l.unwrap()).collect();
         assert_eq!(unique_labels.len(), 9);
     }
 
@@ -406,19 +399,22 @@ mod tests {
         // 0 1 1 0
         // 0 1 1 0
         // 0 0 0 0
-        let indices = vec![
-            0, 0, 0, 0,
-            0, 1, 1, 0,
-            0, 1, 1, 0,
-            0, 0, 0, 0,
-        ];
+        let indices = vec![0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0];
         let result = extract_region_map(&indices, 4, 4, &relaxed_params());
 
         // 4-连通: 外围 cluster-0 是一个连通区域 (面积 12), 中心 cluster-1 是另一个 (面积 4)
         assert_eq!(result.regions.len(), 2, "expected 2 connected regions");
 
-        let outer: Vec<_> = result.regions.iter().filter(|r| r.cluster_id == 0).collect();
-        let inner: Vec<_> = result.regions.iter().filter(|r| r.cluster_id == 1).collect();
+        let outer: Vec<_> = result
+            .regions
+            .iter()
+            .filter(|r| r.cluster_id == 0)
+            .collect();
+        let inner: Vec<_> = result
+            .regions
+            .iter()
+            .filter(|r| r.cluster_id == 1)
+            .collect();
 
         assert_eq!(outer.len(), 1);
         assert_eq!(inner.len(), 1);
@@ -453,12 +449,7 @@ mod tests {
     #[test]
     fn test_min_region_area_filtering() {
         // 4×4: 外围 cluster-0 (面积 12), 中心 cluster-1 (面积 4)
-        let indices = vec![
-            0, 0, 0, 0,
-            0, 1, 1, 0,
-            0, 1, 1, 0,
-            0, 0, 0, 0,
-        ];
+        let indices = vec![0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0];
 
         // min_region_area = 5 → 过滤掉 cluster-1 (面积 4)
         let mut params = SegmentParams::default();
@@ -495,16 +486,13 @@ mod tests {
         // 2×4: cluster 0 在左侧和右侧, 中间隔开 (4-连通下不连通)
         // 0 0 1 0
         // 0 0 1 0
-        let indices = vec![
-            0, 0, 1, 0,
-            0, 0, 1, 0,
-        ];
+        let indices = vec![0, 0, 1, 0, 0, 0, 1, 0];
         let result = extract_region_map(&indices, 4, 2, &relaxed_params());
 
         // 应产生 3 个区域: 左 cluster-0 (2×2=4), 中 cluster-1 (2×1=2), 右 cluster-0 (2×1=2)
         assert_eq!(result.regions.len(), 3);
 
-        let left_label = result.labels[0];  // (0,0)
+        let left_label = result.labels[0]; // (0,0)
         let right_label = result.labels[3]; // (3,0)
 
         // 左右同簇但不同标签

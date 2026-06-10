@@ -21,6 +21,7 @@
 
 use crate::params::SegmentParams;
 use crate::region::Region;
+use std::collections::HashMap;
 
 // =============================================================================
 // Simple Union-Find (inline — not using region.rs private UnionFind)
@@ -80,6 +81,14 @@ impl Uf {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AdjacentPair {
+    a: usize,
+    b: usize,
+    mean_edge: f64,
+    boundary_len: usize,
+}
+
 // =============================================================================
 // Public API
 // =============================================================================
@@ -114,12 +123,56 @@ pub fn refine(
     height: u32,
     params: &SegmentParams,
 ) -> (Vec<Region>, Vec<Option<usize>>) {
+    refine_impl(regions, labels, edge_strength, None, width, height, params)
+}
+
+/// 边缘 + 颜色感知区域精炼。
+///
+/// `cluster_centroids` 是 quantize 阶段输出的 CIELAB 质心，用于判断相邻区域
+/// 是否只是被量化过程切得过细。颜色近、共享边界不强的区域会被合并。
+pub fn refine_with_colors(
+    regions: &[Region],
+    labels: &[Option<usize>],
+    edge_strength: &[f64],
+    cluster_centroids: &[[f64; 3]],
+    width: u32,
+    height: u32,
+    params: &SegmentParams,
+) -> (Vec<Region>, Vec<Option<usize>>) {
+    refine_impl(
+        regions,
+        labels,
+        edge_strength,
+        Some(cluster_centroids),
+        width,
+        height,
+        params,
+    )
+}
+
+fn refine_impl(
+    regions: &[Region],
+    labels: &[Option<usize>],
+    edge_strength: &[f64],
+    cluster_centroids: Option<&[[f64; 3]]>,
+    width: u32,
+    height: u32,
+    params: &SegmentParams,
+) -> (Vec<Region>, Vec<Option<usize>>) {
     let w = width as usize;
     let h = height as usize;
     let total = w * h;
 
-    assert_eq!(labels.len(), total, "labels length must equal width * height");
-    assert_eq!(edge_strength.len(), total, "edge_strength length must equal width * height");
+    assert_eq!(
+        labels.len(),
+        total,
+        "labels length must equal width * height"
+    );
+    assert_eq!(
+        edge_strength.len(),
+        total,
+        "edge_strength length must equal width * height"
+    );
 
     if regions.is_empty() {
         return (Vec::new(), vec![None; total]);
@@ -130,6 +183,7 @@ pub fn refine(
         regions,
         labels,
         edge_strength,
+        cluster_centroids,
         width,
         height,
         params,
@@ -157,6 +211,7 @@ fn perform_merge(
     regions: &[Region],
     labels: &[Option<usize>],
     edge_strength: &[f64],
+    cluster_centroids: Option<&[[f64; 3]]>,
     width: u32,
     height: u32,
     params: &SegmentParams,
@@ -168,15 +223,16 @@ fn perform_merge(
     let num_regions = regions.len();
 
     // 构建邻接: 每对区域共享边界上的平均边缘强度
-    let triples = compute_adjacency_triples(labels, edge_strength, width, height, num_regions);
+    let pairs = compute_adjacency_pairs(labels, edge_strength, width, height);
 
     // Union-Find 合并
     let mut uf = Uf::new(num_regions);
-    for &(r1, r2, mean_edge) in &triples {
-        if mean_edge <= params.edge_merge_strength {
-            uf.union(r1, r2);
+    for pair in &pairs {
+        if should_merge_pair(pair, regions, cluster_centroids, params) {
+            uf.union(pair.a, pair.b);
         }
     }
+    absorb_small_regions(&mut uf, regions, &pairs, cluster_centroids, params);
 
     let (old_to_new, num_merged) = uf.resolve(num_regions);
 
@@ -237,24 +293,134 @@ fn perform_merge(
     (merged_regions, merged_labels, old_to_new)
 }
 
+/// 判断一对相邻区域是否应合并。
+///
+/// 规则分两层：
+/// - 边界非常弱：视为量化伪边界，直接合并；
+/// - 颜色足够接近且边界没有达到“明确分割线”的强度：合并。
+fn should_merge_pair(
+    pair: &AdjacentPair,
+    regions: &[Region],
+    cluster_centroids: Option<&[[f64; 3]]>,
+    params: &SegmentParams,
+) -> bool {
+    if pair.mean_edge <= params.edge_merge_strength {
+        return true;
+    }
+
+    let Some(color_dist) =
+        region_color_distance(&regions[pair.a], &regions[pair.b], cluster_centroids)
+    else {
+        return false;
+    };
+
+    let color_edge_limit = (params.edge_split_strength * 0.75)
+        .max(params.edge_merge_strength)
+        .min(1.0);
+
+    color_dist <= params.color_merge_distance && pair.mean_edge <= color_edge_limit
+}
+
+/// 将小区域吸收到最合适的邻接区域，减少孤立碎片。
+fn absorb_small_regions(
+    uf: &mut Uf,
+    regions: &[Region],
+    pairs: &[AdjacentPair],
+    cluster_centroids: Option<&[[f64; 3]]>,
+    params: &SegmentParams,
+) {
+    if !params.merge_small_regions || params.min_region_area == 0 {
+        return;
+    }
+
+    let mut small_ids: Vec<usize> = regions
+        .iter()
+        .filter(|r| r.area < params.min_region_area)
+        .map(|r| r.id)
+        .collect();
+    small_ids.sort_by_key(|&rid| regions[rid].area);
+
+    for rid in small_ids {
+        let root = uf.find(rid);
+        let mut best: Option<(usize, f64)> = None;
+
+        for pair in pairs {
+            let other = if pair.a == rid {
+                pair.b
+            } else if pair.b == rid {
+                pair.a
+            } else {
+                continue;
+            };
+
+            if uf.find(other) == root {
+                continue;
+            }
+
+            let color_dist =
+                region_color_distance(&regions[rid], &regions[other], cluster_centroids);
+            let color_ok = color_dist
+                .map(|d| d <= params.small_region_color_distance)
+                .unwrap_or(false);
+            let weak_edge_ok = pair.mean_edge <= params.edge_merge_strength;
+            let tiny_soft_edge_ok = regions[rid].area <= (params.min_region_area / 4).max(1)
+                && pair.mean_edge <= params.edge_split_strength;
+
+            if !(color_ok || weak_edge_ok || tiny_soft_edge_ok) {
+                continue;
+            }
+
+            let color_score = color_dist.unwrap_or(params.small_region_color_distance);
+            let boundary_bonus = (pair.boundary_len as f64).sqrt();
+            let score = color_score + pair.mean_edge * 16.0 - boundary_bonus;
+
+            match best {
+                Some((_, best_score)) if best_score <= score => {}
+                _ => best = Some((other, score)),
+            }
+        }
+
+        if let Some((target, _)) = best {
+            uf.union(rid, target);
+        }
+    }
+}
+
+fn region_color_distance(
+    a: &Region,
+    b: &Region,
+    cluster_centroids: Option<&[[f64; 3]]>,
+) -> Option<f64> {
+    if a.cluster_id == b.cluster_id {
+        return Some(0.0);
+    }
+
+    let centroids = cluster_centroids?;
+    let ca = centroids.get(a.cluster_id)?;
+    let cb = centroids.get(b.cluster_id)?;
+    Some(lab_distance(*ca, *cb))
+}
+
+fn lab_distance(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let dl = a[0] - b[0];
+    let da = a[1] - b[1];
+    let db = a[2] - b[2];
+    (dl * dl + da * da + db * db).sqrt()
+}
+
 /// 构建区域邻接三元组列表: (r1, r2, mean_edge_strength), r1 < r2。
 ///
 /// 扫描所有内部像素，对每个像素检查右邻和下邻。若两像素属于不同区域，
 /// 记录该区域对的边界边缘强度（取两像素边缘强度的均值）。
-fn compute_adjacency_triples(
+fn compute_adjacency_pairs(
     labels: &[Option<usize>],
     edge_strength: &[f64],
     width: u32,
     height: u32,
-    num_regions: usize,
-) -> Vec<(usize, usize, f64)> {
+) -> Vec<AdjacentPair> {
     let w = width as usize;
     let h = height as usize;
-
-    // 每对区域的累加和与计数
-    // key = r1 * num_regions + r2 (r1 < r2)
-    let mut sums = vec![0.0_f64; num_regions * num_regions];
-    let mut counts = vec![0_usize; num_regions * num_regions];
+    let mut accum: HashMap<(usize, usize), (f64, usize)> = HashMap::new();
 
     for y in 0..h {
         let row = y * w;
@@ -265,49 +431,65 @@ fn compute_adjacency_triples(
                 None => continue,
             };
 
-            // 右邻
             if x + 1 < w {
-                let idx_r = idx + 1;
-                if let Some(id_b) = labels[idx_r] {
-                    if id_a != id_b {
-                        let mean_e = (edge_strength[idx] + edge_strength[idx_r]) * 0.5;
-                        let (a, b) = if id_a < id_b { (id_a, id_b) } else { (id_b, id_a) };
-                        let key = a * num_regions + b;
-                        sums[key] += mean_e;
-                        counts[key] += 1;
-                    }
-                }
+                push_adjacency_sample(&mut accum, labels, edge_strength, idx, idx + 1, id_a);
             }
-
-            // 下邻
             if y + 1 < h {
-                let idx_d = idx + w;
-                if let Some(id_b) = labels[idx_d] {
-                    if id_a != id_b {
-                        let mean_e = (edge_strength[idx] + edge_strength[idx_d]) * 0.5;
-                        let (a, b) = if id_a < id_b { (id_a, id_b) } else { (id_b, id_a) };
-                        let key = a * num_regions + b;
-                        sums[key] += mean_e;
-                        counts[key] += 1;
-                    }
-                }
+                push_adjacency_sample(&mut accum, labels, edge_strength, idx, idx + w, id_a);
             }
         }
     }
 
-    // 收集非零对
-    let mut triples = Vec::new();
-    for a in 0..num_regions {
-        for b in (a + 1)..num_regions {
-            let key = a * num_regions + b;
-            if counts[key] > 0 {
-                let mean = sums[key] / counts[key] as f64;
-                triples.push((a, b, mean));
-            }
-        }
+    let mut pairs: Vec<AdjacentPair> = accum
+        .into_iter()
+        .map(|((a, b), (sum, count))| AdjacentPair {
+            a,
+            b,
+            mean_edge: sum / count as f64,
+            boundary_len: count,
+        })
+        .collect();
+    pairs.sort_by_key(|p| (p.a, p.b));
+    pairs
+}
+
+fn push_adjacency_sample(
+    accum: &mut HashMap<(usize, usize), (f64, usize)>,
+    labels: &[Option<usize>],
+    edge_strength: &[f64],
+    idx_a: usize,
+    idx_b: usize,
+    id_a: usize,
+) {
+    let Some(id_b) = labels[idx_b] else {
+        return;
+    };
+    if id_a == id_b {
+        return;
     }
 
-    triples
+    let (a, b) = if id_a < id_b {
+        (id_a, id_b)
+    } else {
+        (id_b, id_a)
+    };
+    let mean_e = (edge_strength[idx_a] + edge_strength[idx_b]) * 0.5;
+    let entry = accum.entry((a, b)).or_insert((0.0, 0));
+    entry.0 += mean_e;
+    entry.1 += 1;
+}
+
+fn compute_adjacency_triples(
+    labels: &[Option<usize>],
+    edge_strength: &[f64],
+    width: u32,
+    height: u32,
+    _num_regions: usize,
+) -> Vec<(usize, usize, f64)> {
+    compute_adjacency_pairs(labels, edge_strength, width, height)
+        .into_iter()
+        .map(|p| (p.a, p.b, p.mean_edge))
+        .collect()
 }
 
 /// 邻接列表格式（用于测试/诊断），每个区域返回 [(neighbor_id, mean_edge_strength)]。
@@ -542,8 +724,7 @@ fn split_region(
             let stolen: Vec<usize> = std::mem::take(&mut candidates[sub_id].pixels);
             candidates[target].pixels.extend(stolen);
             candidates[target].area = candidates[target].pixels.len();
-            let (new_centroid, new_bbox) =
-                compute_pixel_stats(&candidates[target].pixels, width);
+            let (new_centroid, new_bbox) = compute_pixel_stats(&candidates[target].pixels, width);
             candidates[target].centroid = new_centroid;
             candidates[target].bbox = new_bbox;
             absorbed[sub_id] = true;
@@ -818,7 +999,11 @@ mod tests {
     }
 
     /// 从 labels 和区域尺寸构建一个简单的 regions 列表（使用近似统计）。
-    fn regions_from_labels(labels: &[Option<usize>], width: u32, num_regions: usize) -> Vec<Region> {
+    fn regions_from_labels(
+        labels: &[Option<usize>],
+        width: u32,
+        num_regions: usize,
+    ) -> Vec<Region> {
         let w = width as usize;
         let total = labels.len();
 
@@ -838,16 +1023,25 @@ mod tests {
                     let y = (i / w) as u32;
                     sum_x += x as f64;
                     sum_y += y as f64;
-                    if x < min_x { min_x = x; }
-                    if y < min_y { min_y = y; }
-                    if x > max_x { max_x = x; }
-                    if y > max_y { max_y = y; }
+                    if x < min_x {
+                        min_x = x;
+                    }
+                    if y < min_y {
+                        min_y = y;
+                    }
+                    if x > max_x {
+                        max_x = x;
+                    }
+                    if y > max_y {
+                        max_y = y;
+                    }
                     count += 1;
                 }
             }
 
             // 取第一个像素的 cluster 作为 cluster_id（任意值，测试中不重要）
-            let cid = labels.iter()
+            let cid = labels
+                .iter()
                 .position(|l| l == &Some(rid))
                 .map(|_| 0)
                 .unwrap_or(0);
@@ -875,8 +1069,14 @@ mod tests {
         let total = (w * h) as usize;
 
         let labels: Vec<Option<usize>> = vec![
-            Some(0), Some(0), Some(1), Some(1),
-            Some(0), Some(0), Some(1), Some(1),
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
         ];
 
         let regions = regions_from_labels(&labels, w, 2);
@@ -885,10 +1085,10 @@ mod tests {
         let mut edge = vec![0.0; total];
         // 边界在列 1-2 之间: 像素 (1,*), (2,*) 邻接
         // 给边界像素低边缘强度
-        edge[1] = 0.01;  // (1,0)
-        edge[3] = 0.01;  // (3,0) → wait, (3,0) is column 3, not boundary
-        edge[5] = 0.01;  // (1,1)
-        edge[7] = 0.01;  // (3,1) → same
+        edge[1] = 0.01; // (1,0)
+        edge[3] = 0.01; // (3,0) → wait, (3,0) is column 3, not boundary
+        edge[5] = 0.01; // (1,1)
+        edge[7] = 0.01; // (3,1) → same
 
         // Actually: pixels at column 1 and 2 are adjacent.
         // Their edge strengths affect the boundary.
@@ -917,8 +1117,14 @@ mod tests {
         let total = (w * h) as usize;
 
         let labels: Vec<Option<usize>> = vec![
-            Some(0), Some(0), Some(1), Some(1),
-            Some(0), Some(0), Some(1), Some(1),
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
         ];
 
         let regions = regions_from_labels(&labels, w, 2);
@@ -934,7 +1140,11 @@ mod tests {
 
         let (result_regions, _result_labels) = refine(&regions, &labels, &edge, w, h, &params);
 
-        assert_eq!(result_regions.len(), 2, "strong edge → regions stay separate");
+        assert_eq!(
+            result_regions.len(),
+            2,
+            "strong edge → regions stay separate"
+        );
         assert_eq!(result_regions[0].area, 4);
         assert_eq!(result_regions[1].area, 4);
     }
@@ -1008,8 +1218,18 @@ mod tests {
         let total = (w * h) as usize;
 
         let labels: Vec<Option<usize>> = vec![
-            Some(0), Some(0), Some(1), Some(1), Some(2), Some(2),
-            Some(0), Some(0), Some(1), Some(1), Some(2), Some(2),
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(2),
+            Some(2),
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(2),
+            Some(2),
         ];
 
         let regions = regions_from_labels(&labels, w, 3);
@@ -1037,7 +1257,7 @@ mod tests {
         // But col 3 also borders region 2. So col 3 would get split off from col 2.
         // Actually the region 1-2 boundary IS at col 3-4. So col 3 is region 1,
         // col 4 is region 2. The strong edge at col 3-4 won't split region 1.
-        
+
         // Let me put strong edge IN region 0 (the one that will merge with 1):
         // After merge, region 0+1 = col 0,1,2,3. Put strong edge at col 2:
         edge[2] = 0.5;
@@ -1111,8 +1331,14 @@ mod tests {
         let h = 2u32;
 
         let labels: Vec<Option<usize>> = vec![
-            Some(0), Some(0), Some(1), Some(1),
-            Some(0), Some(0), Some(1), Some(1),
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
         ];
 
         let edge = vec![0.1; 8];
@@ -1125,6 +1351,10 @@ mod tests {
         // mean edge at boundary (col 1-2): pixels 1,2,5,6
         // each pair contributes edge[1]+edge[2] or edge[5]+edge[6]
         // mean of all boundary edge strengths
-        assert!((triples[0].2 - 0.1).abs() < 1e-9, "mean edge should be 0.1, got {}", triples[0].2);
+        assert!(
+            (triples[0].2 - 0.1).abs() < 1e-9,
+            "mean edge should be 0.1, got {}",
+            triples[0].2
+        );
     }
 }

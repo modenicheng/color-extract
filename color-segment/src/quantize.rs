@@ -387,21 +387,9 @@ mod tests {
 
         for cluster in &clusters {
             let [l, a, b] = cluster.centroid;
-            assert!(
-                (0.0..=100.0).contains(&l),
-                "L* {} not in [0, 100]",
-                l
-            );
-            assert!(
-                (-128.0..=128.0).contains(&a),
-                "a* {} not in [-128, 128]",
-                a
-            );
-            assert!(
-                (-128.0..=128.0).contains(&b),
-                "b* {} not in [-128, 128]",
-                b
-            );
+            assert!((0.0..=100.0).contains(&l), "L* {} not in [0, 100]", l);
+            assert!((-128.0..=128.0).contains(&a), "a* {} not in [-128, 128]", a);
+            assert!((-128.0..=128.0).contains(&b), "b* {} not in [-128, 128]", b);
         }
     }
 
@@ -448,11 +436,7 @@ mod tests {
         };
 
         let clusters = quantize(&pixels, &params);
-        assert_eq!(
-            clusters.len(),
-            1,
-            "high variance_threshold → no splitting"
-        );
+        assert_eq!(clusters.len(), 1, "high variance_threshold → no splitting");
     }
 
     // ── Median Cut 正确分离不同颜色 ──
@@ -494,8 +478,12 @@ mod tests {
                 d_b > 20.0,
                 "red and blue should separate along b* axis (Δb = {}), centroids: ({:.1}, {:.1}, {:.1}) vs ({:.1}, {:.1}, {:.1})",
                 d_b,
-                c0[0], c0[1], c0[2],
-                c1[0], c1[1], c1[2],
+                c0[0],
+                c0[1],
+                c0[2],
+                c1[0],
+                c1[1],
+                c1[2],
             );
         }
     }

@@ -53,10 +53,7 @@ pub struct SegmentResult {
 ///
 /// Returns an error if the image has zero pixels.  All other steps are
 /// infallible for valid inputs.
-pub fn segment(
-    img: &image::RgbImage,
-    params: &SegmentParams,
-) -> anyhow::Result<SegmentResult> {
+pub fn segment(img: &image::RgbImage, params: &SegmentParams) -> anyhow::Result<SegmentResult> {
     let (width, height) = img.dimensions();
     let n = (width * height) as usize;
 
@@ -65,7 +62,13 @@ pub fn segment(
     // ===== Extract RGB pixels (normalised [0, 1]) =====
     let rgb_pixels: Vec<[f64; 3]> = img
         .pixels()
-        .map(|p| [p[0] as f64 / 255.0, p[1] as f64 / 255.0, p[2] as f64 / 255.0])
+        .map(|p| {
+            [
+                p[0] as f64 / 255.0,
+                p[1] as f64 / 255.0,
+                p[2] as f64 / 255.0,
+            ]
+        })
         .collect();
 
     // ===== Quantize: Median Cut in CIELAB =====
@@ -81,19 +84,27 @@ pub fn segment(
 
     // Build sRGB palette from cluster member RGB means (avoids LAB↔RGB round-trip)
     let palette = build_palette(&clusters, &rgb_pixels);
+    let cluster_centroids: Vec<[f64; 3]> = clusters.iter().map(|c| c.centroid).collect();
 
     // ===== Extract connected regions (4-CCL) =====
-    let region_map =
-        region::extract_region_map(&cluster_indices, width, height, params);
+    let region_params = if params.merge_small_regions {
+        let mut p = params.clone();
+        p.min_region_area = 1;
+        p
+    } else {
+        params.clone()
+    };
+    let region_map = region::extract_region_map(&cluster_indices, width, height, &region_params);
 
     // ===== Edge detection (LAB Sobel) =====
     let edge_map = edge::detect_edges(&rgb_pixels, width, height, params);
 
     // ===== Refine: merge weak edges + split strong internal edges =====
-    let (refined_regions, refined_labels) = refine::refine(
+    let (refined_regions, refined_labels) = refine::refine_with_colors(
         &region_map.regions,
         &region_map.labels,
         &edge_map,
+        &cluster_centroids,
         width,
         height,
         params,
@@ -127,13 +138,14 @@ fn build_palette(clusters: &[quantize::Cluster], rgb_pixels: &[[f64; 3]]) -> Pal
         }
 
         let n = cluster.members.len() as f64;
-        let (sr, sg, sb) = cluster
-            .members
-            .iter()
-            .fold((0.0f64, 0.0f64, 0.0f64), |(sr, sg, sb), &idx| {
-                let rgb = rgb_pixels[idx];
-                (sr + rgb[0], sg + rgb[1], sb + rgb[2])
-            });
+        let (sr, sg, sb) =
+            cluster
+                .members
+                .iter()
+                .fold((0.0f64, 0.0f64, 0.0f64), |(sr, sg, sb), &idx| {
+                    let rgb = rgb_pixels[idx];
+                    (sr + rgb[0], sg + rgb[1], sb + rgb[2])
+                });
 
         colors.push([
             ((sr / n).clamp(0.0, 1.0) * 255.0).round() as u8,
