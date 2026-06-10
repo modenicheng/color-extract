@@ -816,12 +816,14 @@ fn main() -> Result<()> {
     println!("color-segment — preprocess_max_dim={max_dim}, stem={stem}");
     println!("rayon threads: {}", rayon::current_num_threads());
     println!(
-        "params: max_clusters={}, min_region={}, edge_thr={:.2}, edge_gamma={:.2}, color_merge_delta={:.1}",
-        params.max_clusters,
+        "params: min_region={}, edge_thr={:.2}, edge_gamma={:.2}, edge_split={:.2}, color_merge={:.1}, morph_open={}, morph_close={}",
         params.min_region_area,
         params.edge_threshold,
         params.edge_gamma,
-        params.color_merge_distance
+        params.edge_split_strength,
+        params.color_merge_distance,
+        params.morph_open_radius,
+        params.morph_close_radius,
     );
 
     // ===== 扫描 imgs/ 目录 =====

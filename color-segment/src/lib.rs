@@ -2,18 +2,16 @@
 // Target: anime-style (二次元) images
 
 pub mod anime;
-pub mod edge;
 pub mod params;
 pub mod quantize;
-pub mod refine;
 pub mod region;
 
 // ===== Re-exports =====
 
 pub use image;
-pub use params::{ColorSpace, SegmentParams};
-pub use quantize::{Palette, Pixel as QPixel};
-pub use region::{Region, RegionMap};
+pub use params::SegmentParams;
+pub use quantize::{Palette, Pixel};
+pub use region::Region;
 
 // ===== Pipeline result =====
 

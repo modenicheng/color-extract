@@ -210,8 +210,14 @@ pub fn segment_anime_blocks(
 
     let features = extract_features(img);
     let feature_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let edge_map = detect_edges_fast(&features, width, height, params);
+    let mut edge_map = detect_edges_fast(&features, width, height, params);
     let edge_ms = started.elapsed().as_secs_f64() * 1000.0;
+    if params.morph_open_radius > 0 {
+        edge_map = morph_open(&edge_map, w, h, params.morph_open_radius);
+    }
+    if params.morph_close_radius > 0 {
+        edge_map = morph_close(&edge_map, w, h, params.morph_close_radius);
+    }
     let (raw_labels, raw_regions) = grow_regions(&features, &edge_map, width, height, params);
     let grow_ms = started.elapsed().as_secs_f64() * 1000.0;
     let (regions, labels, palette) = merge_regions(
@@ -324,6 +330,80 @@ fn detect_edges_fast(
             if gamma == 1.0 { edge } else { edge.powf(gamma) }
         })
         .collect()
+}
+
+// =============================================================================
+// Morphological operations on edge map
+// =============================================================================
+
+/// 3×3 square dilation — each pixel takes the maximum of its 8-neighborhood.
+fn dilate_3x3(edge_map: &[f64], w: usize, h: usize) -> Vec<f64> {
+    let total = w * h;
+    let mut out = vec![0.0; total];
+    for y in 0..h {
+        let y0 = y.saturating_sub(1);
+        let y1 = (y + 1).min(h - 1);
+        for x in 0..w {
+            let idx = y * w + x;
+            let x0 = x.saturating_sub(1);
+            let x1 = (x + 1).min(w - 1);
+            let mut max_v = edge_map[idx];
+            for ny in y0..=y1 {
+                for nx in x0..=x1 {
+                    max_v = max_v.max(edge_map[ny * w + nx]);
+                }
+            }
+            out[idx] = max_v;
+        }
+    }
+    out
+}
+
+/// 3×3 square erosion — each pixel takes the minimum of its 8-neighborhood.
+fn erode_3x3(edge_map: &[f64], w: usize, h: usize) -> Vec<f64> {
+    let total = w * h;
+    let mut out = vec![0.0; total];
+    for y in 0..h {
+        let y0 = y.saturating_sub(1);
+        let y1 = (y + 1).min(h - 1);
+        for x in 0..w {
+            let idx = y * w + x;
+            let x0 = x.saturating_sub(1);
+            let x1 = (x + 1).min(w - 1);
+            let mut min_v = edge_map[idx];
+            for ny in y0..=y1 {
+                for nx in x0..=x1 {
+                    min_v = min_v.min(edge_map[ny * w + nx]);
+                }
+            }
+            out[idx] = min_v;
+        }
+    }
+    out
+}
+
+/// Morphological opening: erode then dilate (removes isolated edge noise).
+fn morph_open(edge_map: &[f64], w: usize, h: usize, radius: u8) -> Vec<f64> {
+    let mut result = edge_map.to_vec();
+    for _ in 0..radius {
+        result = erode_3x3(&result, w, h);
+    }
+    for _ in 0..radius {
+        result = dilate_3x3(&result, w, h);
+    }
+    result
+}
+
+/// Morphological closing: dilate then erode (bridges edge gaps).
+fn morph_close(edge_map: &[f64], w: usize, h: usize, radius: u8) -> Vec<f64> {
+    let mut result = edge_map.to_vec();
+    for _ in 0..radius {
+        result = dilate_3x3(&result, w, h);
+    }
+    for _ in 0..radius {
+        result = erode_3x3(&result, w, h);
+    }
+    result
 }
 
 // =============================================================================
