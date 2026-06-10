@@ -327,7 +327,7 @@ subject_prior:
 # 5. 特征权重
 # ═════════════════════════════════════════════════════════════════════════════
 #
-# 两套独立的 14 维权重:
+# 两套独立的 18 维权重:
 #   - weights_add: 加法分支（加权求和）
 #   - weights_mul: 乘法分支（加权软乘法，各特征概率相乘）
 #
@@ -351,6 +351,10 @@ subject_prior:
 # │ background_mask_morph│  0.30  │ 三阶段硬 mask（1=前景/0=背景）。调大→按背景掩膜严格裁剪 │
 # │ background_fg_conf   │  0.30  │ 三阶段软置信度（0~1）。调大→更依赖背景管线的主体判断    │
 # │ subject_prior        │  0.10  │ 离画面中心越近权重越高（构图中心偏向）       │
+# │ abs_light            │  0.04  │ 绝对 L* 明度通道（亮→暗直接映射）            │
+# │ abs_lab_a            │  0.04  │ 绝对 a* 红绿色通道（绿→红直接映射）          │
+# │ abs_lab_b            │  0.04  │ 绝对 b* 黄蓝色通道（蓝→黄直接映射）          │
+# │ abs_sat              │  0.03  │ 绝对饱和度通道（鲜艳→素雅直接映射）          │
 # └──────────────────────┴────────┴──────────────────────────────────────────────┘
 #
 # 常见调参策略:
@@ -365,39 +369,47 @@ subject_prior:
 
 weights_add:
   dct: 0.1
-  lab_grad: 0.0
+  lab_grad: 0.02
   spectral: 0.1
   global_light: 0.00
   global_lab_a: 0.10
   global_lab_b: 0.08
-  global_sat: 0.05
+  global_sat: 0.01
   local_light: 0.00
   local_lab_a: 0.00
   local_lab_b: 0.00
-  local_sat: 0.03
-  background_mask_morph: 0.60
-  background_fg_confidence: 0.00
+  local_sat: 0.01
+  background_mask_morph: 0.10
+  background_fg_confidence: 0.20
   subject_prior: 0.00
+  abs_light: 0.00
+  abs_lab_a: 0.033
+  abs_lab_b: 0.03
+  abs_sat: 0.01
 
 # 乘法分支权重（与加法独立，可完全不同）
 # 乘法分支 = 软乘法: score = product( (ε + (1-ε)*feat_i)^w_i )
 # 特性: 任一特征值接近 0 时，乘积会被"拉低"，所以乘法分支比加法更"保守"。
 #       适合用于"所有特征同时认可"的区域才高亮的场景。
 weights_mul:
-  dct: 0.00
+  dct: 0.01
   lab_grad: 0.00
   spectral: 0.12
   global_light: 0.03
   global_lab_a: 0.08
   global_lab_b: 0.06
-  global_sat: 0.05
+  global_sat: 0.00
   local_light: 0.07
   local_lab_a: 0.04
   local_lab_b: 0.01
-  local_sat: 0.03
+  local_sat: 0.00
   background_mask_morph: 0.02
   background_fg_confidence: 0.20
   subject_prior: 0.00
+  abs_light: 0.00
+  abs_lab_a: 0.00
+  abs_lab_b: 0.00
+  abs_sat: 0.0
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 6. Hybrid Fusion 参数
@@ -461,8 +473,8 @@ filter:
 # ═════════════════════════════════════════════════════════════════════════════
 
 contact_sheet:
-  cols: 5 # 列数（总格数 = cols × rows，默认 5×4=20 格容纳 1 原图 + 7 特征 + 6 融合 + 1 空位印时间戳）
-  rows: 4 # 行数
+  cols: 7 # 列数（总格数 = cols × rows，默认 5×4=20 格容纳 1 原图 + 7 特征 + 6 融合 + 1 空位印时间戳）
+  rows: 5 # 行数（18特征 + 原图 → 4行 + 融合/过滤各1行 = 6行）
   pad: 4 # 单元格间距（像素）
   thumb_w: 240 # 每个单元格的最大宽度（像素），高度按原图比例自动计算
   label_h: 16 # 单元格底部标签区域高度（像素）
@@ -625,3 +637,11 @@ dynamic_weights:
       enabled: true
     subject_prior:
       enabled: false
+    abs_light:
+      enabled: true
+    abs_lab_a:
+      enabled: true
+    abs_lab_b:
+      enabled: true
+    abs_sat:
+      enabled: true

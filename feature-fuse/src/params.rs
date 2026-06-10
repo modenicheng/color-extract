@@ -54,6 +54,10 @@ pub struct Weights {
     pub background_mask_morph: f64,
     pub background_fg_confidence: f64,
     pub subject_prior: f64,
+    pub abs_light: f64,
+    pub abs_lab_a: f64,
+    pub abs_lab_b: f64,
+    pub abs_sat: f64,
 }
 
 // =============================================================================
@@ -73,7 +77,7 @@ impl Default for FeatureDynamicConfig {
     }
 }
 
-/// 各特征动态权重开关（14 个特征）
+/// 各特征动态权重开关（18 个特征）
 #[derive(Debug, Deserialize, Clone)]
 pub struct DynamicWeightsPerFeature {
     #[serde(default)]
@@ -104,6 +108,14 @@ pub struct DynamicWeightsPerFeature {
     pub background_fg_confidence: FeatureDynamicConfig,
     #[serde(default = "default_dw_per_feat_disabled")]
     pub subject_prior: FeatureDynamicConfig,
+    #[serde(default)]
+    pub abs_light: FeatureDynamicConfig,
+    #[serde(default)]
+    pub abs_lab_a: FeatureDynamicConfig,
+    #[serde(default)]
+    pub abs_lab_b: FeatureDynamicConfig,
+    #[serde(default)]
+    pub abs_sat: FeatureDynamicConfig,
 }
 
 impl Default for DynamicWeightsPerFeature {
@@ -123,6 +135,10 @@ impl Default for DynamicWeightsPerFeature {
             background_mask_morph: FeatureDynamicConfig { enabled: false },
             background_fg_confidence: FeatureDynamicConfig { enabled: false },
             subject_prior: FeatureDynamicConfig { enabled: false },
+            abs_light: FeatureDynamicConfig::default(),
+            abs_lab_a: FeatureDynamicConfig::default(),
+            abs_lab_b: FeatureDynamicConfig::default(),
+            abs_sat: FeatureDynamicConfig::default(),
         }
     }
 }

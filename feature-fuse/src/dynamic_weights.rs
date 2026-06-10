@@ -213,7 +213,7 @@ fn compute_multiplier(
 // =============================================================================
 
 /// 对应 Weights 结构体字段顺序的特征名称
-const FEATURE_NAMES: [&str; 14] = [
+const FEATURE_NAMES: [&str; 18] = [
     "dct",
     "lab_grad",
     "spectral",
@@ -228,10 +228,14 @@ const FEATURE_NAMES: [&str; 14] = [
     "background_mask_morph",
     "background_fg_confidence",
     "subject_prior",
+    "abs_light",
+    "abs_lab_a",
+    "abs_lab_b",
+    "abs_sat",
 ];
 
 /// 从 per_feature 配置中提取各特征是否启用动态权重
-fn per_feature_enabled(per_feat: &DynamicWeightsPerFeature) -> [bool; 14] {
+fn per_feature_enabled(per_feat: &DynamicWeightsPerFeature) -> [bool; 18] {
     [
         per_feat.dct.enabled,
         per_feat.lab_grad.enabled,
@@ -247,15 +251,19 @@ fn per_feature_enabled(per_feat: &DynamicWeightsPerFeature) -> [bool; 14] {
         per_feat.background_mask_morph.enabled,
         per_feat.background_fg_confidence.enabled,
         per_feat.subject_prior.enabled,
+        per_feat.abs_light.enabled,
+        per_feat.abs_lab_a.enabled,
+        per_feat.abs_lab_b.enabled,
+        per_feat.abs_sat.enabled,
     ]
 }
 
 /// 计算所有特征的动态权重
 ///
 /// # Arguments
-/// * `features` - 14 个特征图（顺序与 Weights 结构体字段一致）
-/// * `base_add` - 加法分支 base weight 数组（长度 14）
-/// * `base_mul` - 乘法分支 base weight 数组（长度 14）
+/// * `features` - 18 个特征图（顺序与 Weights 结构体字段一致）
+/// * `base_add` - 加法分支 base weight 数组（长度 18）
+/// * `base_mul` - 乘法分支 base weight 数组（长度 18）
 /// * `cfg` - 动态权重配置
 ///
 /// # Returns
@@ -266,12 +274,12 @@ pub fn compute_dynamic_weights(
     base_mul: &[f64],
     cfg: &DynamicWeightsConfig,
 ) -> DynamicWeightsResult {
-    assert_eq!(features.len(), 14);
-    assert_eq!(base_add.len(), 14);
-    assert_eq!(base_mul.len(), 14);
+    assert_eq!(features.len(), 18);
+    assert_eq!(base_add.len(), 18);
+    assert_eq!(base_mul.len(), 18);
 
     let enabled_flags = per_feature_enabled(&cfg.per_feature);
-    let n_features = 14usize;
+    let n_features = 18usize;
 
     let mut add_weights = vec![0.0_f64; n_features];
     let mut mul_weights = vec![0.0_f64; n_features];

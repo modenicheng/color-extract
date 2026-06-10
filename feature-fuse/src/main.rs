@@ -164,7 +164,7 @@ fn process_one_image(
     let out_dir = out_base.join(&stem);
     std::fs::create_dir_all(&out_dir)?;
 
-    println!("  {} ({}×{}) — 14 features …", stem, w, h);
+    println!("  {} ({}×{}) — 18 features …", stem, w, h);
 
     // ── 保存 resize 后的原图 ──
     save_rgb_png(&data.rgb, w, h, &out_dir.join("resized.png"))?;
@@ -366,8 +366,34 @@ fn process_one_image(
     save_gray_png(&sp_norm, w, h, &out_dir.join("subject_prior.png"))?;
     let t_sp = t0.elapsed();
 
+    // ── (11a) Absolute Light (L* raw channel) ──
+    let t0 = std::time::Instant::now();
+    let abs_l_norm = percentile_normalize(&data.lab_l, p_low, p_high);
+    save_gray_png(&abs_l_norm, w, h, &out_dir.join("abs_light.png"))?;
+    let t_al = t0.elapsed();
+
+    // ── (11b) Absolute LAB a* (red-green raw channel) ──
+    let t0 = std::time::Instant::now();
+    let abs_a_raw: Vec<f64> = data.lab_a.iter().map(|&v| (v + 128.0) / 256.0).collect();
+    let abs_a_norm = percentile_normalize(&abs_a_raw, p_low, p_high);
+    save_gray_png(&abs_a_norm, w, h, &out_dir.join("abs_lab_a.png"))?;
+    let t_aa = t0.elapsed();
+
+    // ── (11c) Absolute LAB b* (yellow-blue raw channel) ──
+    let t0 = std::time::Instant::now();
+    let abs_b_raw: Vec<f64> = data.lab_b.iter().map(|&v| (v + 128.0) / 256.0).collect();
+    let abs_b_norm = percentile_normalize(&abs_b_raw, p_low, p_high);
+    save_gray_png(&abs_b_norm, w, h, &out_dir.join("abs_lab_b.png"))?;
+    let t_ab = t0.elapsed();
+
+    // ── (11d) Absolute HSL Saturation (raw channel) ──
+    let t0 = std::time::Instant::now();
+    let abs_sat_norm = percentile_normalize(&data.hsl_s, p_low, p_high);
+    save_gray_png(&abs_sat_norm, w, h, &out_dir.join("abs_sat.png"))?;
+    let t_as = t0.elapsed();
+
     println!(
-        "    DCT={:.1}s LAB={:.1}s SR={:.1}s GL={:.1}s GA={:.1}s GB={:.1}s GS={:.1}s LL={:.1}s LA={:.1}s LB={:.1}s LS={:.1}s BG={:.1}s SP={:.1}s — fusion …",
+        "    DCT={:.1}s LAB={:.1}s SR={:.1}s GL={:.1}s GA={:.1}s GB={:.1}s GS={:.1}s LL={:.1}s LA={:.1}s LB={:.1}s LS={:.1}s BG={:.1}s SP={:.1}s AL={:.1}s AA={:.1}s AB={:.1}s AS={:.1}s — fusion …",
         t_dct.as_secs_f64(),
         t_lab.as_secs_f64(),
         t_sr.as_secs_f64(),
@@ -381,10 +407,14 @@ fn process_one_image(
         t_ls.as_secs_f64(),
         t_bg.as_secs_f64(),
         t_sp.as_secs_f64(),
+        t_al.as_secs_f64(),
+        t_aa.as_secs_f64(),
+        t_ab.as_secs_f64(),
+        t_as.as_secs_f64(),
     );
 
     // ── 归一化后的所有特征 ──
-    let features: [&[f64]; 14] = [
+    let features: [&[f64]; 18] = [
         &dct_norm,
         &lab_grad_norm,
         &sr_norm,
@@ -399,8 +429,12 @@ fn process_one_image(
         &bg_mask_norm,
         &bg_fg_norm,
         &sp_norm,
+        &abs_l_norm,
+        &abs_a_norm,
+        &abs_b_norm,
+        &abs_sat_norm,
     ];
-    let feature_names: [&str; 14] = [
+    let feature_names: [&str; 18] = [
         "dct_complexity",
         "lab_gradient",
         "spectral_residual",
@@ -415,6 +449,10 @@ fn process_one_image(
         "background_mask_morph",
         "background_fg_confidence",
         "subject_prior",
+        "abs_light",
+        "abs_lab_a",
+        "abs_lab_b",
+        "abs_sat",
     ];
 
     // ── 从 YAML 提取 base weight 数组 ──

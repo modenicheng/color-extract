@@ -71,6 +71,10 @@ pub fn weights_to_array(w: &Weights) -> Vec<f64> {
         w.background_mask_morph,
         w.background_fg_confidence,
         w.subject_prior,
+        w.abs_light,
+        w.abs_lab_a,
+        w.abs_lab_b,
+        w.abs_sat,
     ]
 }
 
