@@ -28,6 +28,8 @@ pub struct Params {
     pub impression: ImpressionParams,
     #[serde(default)]
     pub dynamic_weights: DynamicWeightsConfig,
+    #[serde(default)]
+    pub saturation: SaturationParams,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -44,9 +46,11 @@ pub struct Weights {
     pub global_light: f64,
     pub global_lab_a: f64,
     pub global_lab_b: f64,
+    pub global_sat: f64,
     pub local_light: f64,
     pub local_lab_a: f64,
     pub local_lab_b: f64,
+    pub local_sat: f64,
     pub background_mask_morph: f64,
     pub background_fg_confidence: f64,
     pub subject_prior: f64,
@@ -69,7 +73,7 @@ impl Default for FeatureDynamicConfig {
     }
 }
 
-/// 各特征动态权重开关（12 个特征）
+/// 各特征动态权重开关（14 个特征）
 #[derive(Debug, Deserialize, Clone)]
 pub struct DynamicWeightsPerFeature {
     #[serde(default)]
@@ -85,11 +89,15 @@ pub struct DynamicWeightsPerFeature {
     #[serde(default)]
     pub global_lab_b: FeatureDynamicConfig,
     #[serde(default)]
+    pub global_sat: FeatureDynamicConfig,
+    #[serde(default)]
     pub local_light: FeatureDynamicConfig,
     #[serde(default)]
     pub local_lab_a: FeatureDynamicConfig,
     #[serde(default)]
     pub local_lab_b: FeatureDynamicConfig,
+    #[serde(default)]
+    pub local_sat: FeatureDynamicConfig,
     #[serde(default = "default_dw_per_feat_disabled")]
     pub background_mask_morph: FeatureDynamicConfig,
     #[serde(default = "default_dw_per_feat_disabled")]
@@ -107,9 +115,11 @@ impl Default for DynamicWeightsPerFeature {
             global_light: FeatureDynamicConfig::default(),
             global_lab_a: FeatureDynamicConfig::default(),
             global_lab_b: FeatureDynamicConfig::default(),
+            global_sat: FeatureDynamicConfig::default(),
             local_light: FeatureDynamicConfig::default(),
             local_lab_a: FeatureDynamicConfig::default(),
             local_lab_b: FeatureDynamicConfig::default(),
+            local_sat: FeatureDynamicConfig::default(),
             background_mask_morph: FeatureDynamicConfig { enabled: false },
             background_fg_confidence: FeatureDynamicConfig { enabled: false },
             subject_prior: FeatureDynamicConfig { enabled: false },
@@ -247,6 +257,7 @@ pub struct GlobalResidualParams {
     pub light: RobustCenterParams,
     pub lab_a: RobustCenterParams,
     pub lab_b: RobustCenterParams,
+    pub sat: RobustCenterParams,
 }
 
 /// 稳健亮度/饱和度中心估计参数
@@ -567,6 +578,28 @@ impl Default for ColorPartitionParams {
             bg_score_threshold: 0.55,
             bg_connect_threshold: 0.08,
             max_bg_ratio: 0.85,
+        }
+    }
+}
+
+// =============================================================================
+// Saturation 后处理参数
+// =============================================================================
+
+/// 饱和度特征后处理配置
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct SaturationParams {
+    /// 局部饱和度残差的 post-gamma 压缩指数。
+    /// 应用于 gaussian 残差计算后、percentile 归一化前: sat = raw^gamma。
+    /// <1 → 抬升低饱和度差异（更慷慨）；>1 → 压制低值（更严格）；1.0 → 无变化。
+    pub local_post_gamma: f64,
+}
+
+impl Default for SaturationParams {
+    fn default() -> Self {
+        Self {
+            local_post_gamma: 1.0,
         }
     }
 }

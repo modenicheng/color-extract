@@ -100,6 +100,29 @@ global_residual:
     median_weight: 0.35
     gamma_power: 1
 
+  # HSL 饱和度全局残差。hsl_s 已是 [0, 1]，直接做稳健中心残差。
+  sat:
+    compression: gamma
+    trim_low: 2.0
+    trim_high: 98.0
+    trimmed_mean_weight: 0.65
+    median_weight: 0.35
+    gamma_power: 1
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 4a. 饱和度特征后处理参数
+# ═════════════════════════════════════════════════════════════════════════════
+# 专用于本地饱和度残差的 post-gamma 压缩。
+#
+#   local_post_gamma: 局部饱和度残差后处理指数。
+#     在 Gaussian 残差计算后、percentile 归一化前: sat = raw^gamma。
+#     <1 (如 0.5) → 抬升低饱和度差异 → 更多"微弱色彩变化"被响应。
+#     =1 → 无变化。
+#     >1 (如 2.0) → 压制低值 → 只有高饱和度差异幸存。
+#     建议范围: 0.3~3.0，默认 1.0。
+saturation:
+  local_post_gamma: 1.0
+
 # ═════════════════════════════════════════════════════════════════════════════
 # 4b. 背景估计参数（三阶段管线: 色域切分 + BFS 连通 + 软 mask）
 # ═════════════════════════════════════════════════════════════════════════════
@@ -242,7 +265,7 @@ background:
   flood_barrier:
     enabled: true
     grad_stop: 0.51  # 避免背景边界阻断背景识别
-    dct_stop: 0.35
+    dct_stop: 0.30
     local_light_stop: 0.40
     spectral_stop: 0.50
     color_threshold: 0.40
@@ -304,29 +327,31 @@ subject_prior:
 # 5. 特征权重
 # ═════════════════════════════════════════════════════════════════════════════
 #
-# 两套独立的 12 维权重:
+# 两套独立的 14 维权重:
 #   - weights_add: 加法分支（加权求和）
 #   - weights_mul: 乘法分支（加权软乘法，各特征概率相乘）
 #
 # 每组权重内部会自动归一化（除以总和），所以不必刻意让总和为 1。
 # 某特征权重设 0 → 该特征不参与融合；设越大 → 该特征对结果影响越大。
 #
-# ┌──────────────────────┬────────┬──────────────────────────────────────────┐
-# │ 特征                  │ 默认值  │ 调大则更关注…                           │
-# ├──────────────────────┼────────┼──────────────────────────────────────────┤
-# │ dct                  │  0.22  │ 纯色/平滑背景区域（高频纹理少的地方）被压制 │
-# │ lab_grad             │  0.22  │ 结构边缘（线条、轮廓）被高亮              │
-# │ spectral             │  0.12  │ 全局视觉显著区域（突兀物体）被突出        │
-# │ global_light         │  0.05  │ 偏离整体亮度的色块（亮/暗异常区域）       │
-# │ global_lab_a         │  0.09  │ 偏离全局 a* 红-绿色调的像素（暖调/冷调异常）     │
-# │ global_lab_b         │  0.09  │ 偏离全局 b* 黄-蓝色调的像素                     │
-# │ local_light          │  0.06  │ HSL 局部亮度细节（精细光影变化）          │
-# │ local_lab_a          │  0.04  │ LAB a* 局部残差（红-绿轴细节变化）              │
-# │ local_lab_b          │  0.04  │ LAB b* 局部残差（黄-蓝轴细节变化）              │
+# ┌──────────────────────┬────────┬──────────────────────────────────────────────┐
+# │ 特征                  │ 默认值  │ 调大则更关注…                               │
+# ├──────────────────────┼────────┼──────────────────────────────────────────────┤
+# │ dct                  │  0.22  │ 纯色/平滑背景区域（高频纹理少的地方）被压制   │
+# │ lab_grad             │  0.22  │ 结构边缘（线条、轮廓）被高亮                  │
+# │ spectral             │  0.12  │ 全局视觉显著区域（突兀物体）被突出            │
+# │ global_light         │  0.05  │ 偏离整体亮度的色块（亮/暗异常区域）           │
+# │ global_lab_a         │  0.09  │ 偏离全局 a* 红-绿色调的像素（暖调/冷调异常） │
+# │ global_lab_b         │  0.09  │ 偏离全局 b* 黄-蓝色调的像素                  │
+# │ global_sat           │  0.05  │ 偏离全局饱和度的像素（鲜艳/素雅异常）         │
+# │ local_light          │  0.06  │ HSL 局部亮度细节（精细光影变化）              │
+# │ local_lab_a          │  0.04  │ LAB a* 局部残差（红-绿轴细节变化）            │
+# │ local_lab_b          │  0.04  │ LAB b* 局部残差（黄-蓝轴细节变化）            │
+# │ local_sat            │  0.03  │ HSL 局部饱和度残差（鲜艳色块边缘）            │
 # │ background_mask_morph│  0.30  │ 三阶段硬 mask（1=前景/0=背景）。调大→按背景掩膜严格裁剪 │
 # │ background_fg_conf   │  0.30  │ 三阶段软置信度（0~1）。调大→更依赖背景管线的主体判断    │
-# │ subject_prior        │  0.10  │ 离画面中心越近权重越高（构图中心偏向）   │
-# └──────────────────────┴────────┴──────────────────────────────────────────┘
+# │ subject_prior        │  0.10  │ 离画面中心越近权重越高（构图中心偏向）       │
+# └──────────────────────┴────────┴──────────────────────────────────────────────┘
 #
 # 常见调参策略:
 #   • 想突出构图主体 → 增大 spectral / lab_grad
@@ -345,9 +370,11 @@ weights_add:
   global_light: 0.00
   global_lab_a: 0.10
   global_lab_b: 0.08
+  global_sat: 0.05
   local_light: 0.00
   local_lab_a: 0.00
   local_lab_b: 0.00
+  local_sat: 0.03
   background_mask_morph: 0.60
   background_fg_confidence: 0.00
   subject_prior: 0.00
@@ -363,9 +390,11 @@ weights_mul:
   global_light: 0.03
   global_lab_a: 0.08
   global_lab_b: 0.06
+  global_sat: 0.05
   local_light: 0.07
   local_lab_a: 0.04
   local_lab_b: 0.01
+  local_sat: 0.03
   background_mask_morph: 0.02
   background_fg_confidence: 0.20
   subject_prior: 0.00
@@ -550,7 +579,7 @@ impression:
 dynamic_weights:
   enabled: true
 
-  min_multiplier: 0.35
+  min_multiplier: 0.45
   max_multiplier: 1.80
 
   variance_ref: 0.05
@@ -559,8 +588,8 @@ dynamic_weights:
   eps: 1.0e-6
 
   stat_mix:
-    variance: 0.45
-    range: 0.35
+    variance: 0.55
+    range: 0.25
     peakiness: 0.20
 
   percentile:
@@ -580,15 +609,19 @@ dynamic_weights:
       enabled: true
     global_lab_b:
       enabled: true
+    global_sat:
+      enabled: true
     local_light:
       enabled: true
     local_lab_a:
       enabled: true
     local_lab_b:
       enabled: true
-    background_mask_morph:
+    local_sat:
       enabled: true
+    background_mask_morph:
+      enabled: false
     background_fg_confidence:
       enabled: true
     subject_prior:
-      enabled: true
+      enabled: false

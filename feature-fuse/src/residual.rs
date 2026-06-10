@@ -167,3 +167,34 @@ pub fn compute_local_lab_b_residual(lab_b: &[f64], w: u32, h: u32, sigma: f32) -
     let normalized: Vec<f64> = lab_b.iter().map(|&v| (v + 128.0) / 256.0).collect();
     compute_gaussian_residual(&normalized, w, h, sigma)
 }
+
+// ── Saturation Residuals ──
+
+/// 计算 HSL 饱和度全局残差: |saturation - robust_center| (稳健饱和度中心)
+///
+/// hsl_s 已是 [0, 1]，直接做稳健中心残差。
+pub fn compute_global_sat_residual(hsl_s: &[f64], rcp: &RobustCenterParams) -> Vec<f64> {
+    let center = robust_center(hsl_s, rcp);
+    hsl_s.iter().map(|&v| (v - center).abs()).collect()
+}
+
+/// 计算 HSL 饱和度局部（Gaussian）残差: |saturation - blur(saturation)| + post_gamma
+///
+/// 先做 Gaussian 残差，再应用 gamma 压缩（调用方在 percentile_normalize 之前处理）:
+///   local_post_gamma < 1 → 抬升低饱和度差异，更多"微弱饱和"区域被响应
+///   local_post_gamma = 1 → 无变化
+///   local_post_gamma > 1 → 压制低值，只有高饱和度差异幸存
+pub fn compute_local_sat_residual(
+    hsl_s: &[f64],
+    w: u32,
+    h: u32,
+    sigma: f32,
+    post_gamma: f64,
+) -> Vec<f64> {
+    let raw = compute_gaussian_residual(hsl_s, w, h, sigma);
+    if (post_gamma - 1.0).abs() < 1e-12 {
+        raw
+    } else {
+        raw.iter().map(|&v| v.powf(post_gamma)).collect()
+    }
+}

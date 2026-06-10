@@ -213,23 +213,25 @@ fn compute_multiplier(
 // =============================================================================
 
 /// 对应 Weights 结构体字段顺序的特征名称
-const FEATURE_NAMES: [&str; 12] = [
+const FEATURE_NAMES: [&str; 14] = [
     "dct",
     "lab_grad",
     "spectral",
     "global_light",
     "global_lab_a",
     "global_lab_b",
+    "global_sat",
     "local_light",
     "local_lab_a",
     "local_lab_b",
+    "local_sat",
     "background_mask_morph",
     "background_fg_confidence",
     "subject_prior",
 ];
 
 /// 从 per_feature 配置中提取各特征是否启用动态权重
-fn per_feature_enabled(per_feat: &DynamicWeightsPerFeature) -> [bool; 12] {
+fn per_feature_enabled(per_feat: &DynamicWeightsPerFeature) -> [bool; 14] {
     [
         per_feat.dct.enabled,
         per_feat.lab_grad.enabled,
@@ -237,9 +239,11 @@ fn per_feature_enabled(per_feat: &DynamicWeightsPerFeature) -> [bool; 12] {
         per_feat.global_light.enabled,
         per_feat.global_lab_a.enabled,
         per_feat.global_lab_b.enabled,
+        per_feat.global_sat.enabled,
         per_feat.local_light.enabled,
         per_feat.local_lab_a.enabled,
         per_feat.local_lab_b.enabled,
+        per_feat.local_sat.enabled,
         per_feat.background_mask_morph.enabled,
         per_feat.background_fg_confidence.enabled,
         per_feat.subject_prior.enabled,
@@ -249,9 +253,9 @@ fn per_feature_enabled(per_feat: &DynamicWeightsPerFeature) -> [bool; 12] {
 /// 计算所有特征的动态权重
 ///
 /// # Arguments
-/// * `features` - 12 个特征图（顺序与 Weights 结构体字段一致）
-/// * `base_add` - 加法分支 base weight 数组（长度 12）
-/// * `base_mul` - 乘法分支 base weight 数组（长度 12）
+/// * `features` - 14 个特征图（顺序与 Weights 结构体字段一致）
+/// * `base_add` - 加法分支 base weight 数组（长度 14）
+/// * `base_mul` - 乘法分支 base weight 数组（长度 14）
 /// * `cfg` - 动态权重配置
 ///
 /// # Returns
@@ -262,12 +266,12 @@ pub fn compute_dynamic_weights(
     base_mul: &[f64],
     cfg: &DynamicWeightsConfig,
 ) -> DynamicWeightsResult {
-    assert_eq!(features.len(), 12);
-    assert_eq!(base_add.len(), 12);
-    assert_eq!(base_mul.len(), 12);
+    assert_eq!(features.len(), 14);
+    assert_eq!(base_add.len(), 14);
+    assert_eq!(base_mul.len(), 14);
 
     let enabled_flags = per_feature_enabled(&cfg.per_feature);
-    let n_features = 12usize;
+    let n_features = 14usize;
 
     let mut add_weights = vec![0.0_f64; n_features];
     let mut mul_weights = vec![0.0_f64; n_features];

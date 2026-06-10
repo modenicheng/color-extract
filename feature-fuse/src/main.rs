@@ -34,7 +34,9 @@ use crate::image::load_image;
 use crate::params::{load_params, validate_filter, Params};
 use crate::residual::{
     compute_global_lab_a_residual, compute_global_lab_b_residual, compute_global_light_residual,
+    compute_global_sat_residual,
     compute_local_lab_a_residual, compute_local_lab_b_residual, compute_local_light_residual,
+    compute_local_sat_residual,
 };
 use crate::spectral::compute_spectral_residual;
 
@@ -162,7 +164,7 @@ fn process_one_image(
     let out_dir = out_base.join(&stem);
     std::fs::create_dir_all(&out_dir)?;
 
-    println!("  {} ({}×{}) — 12 features …", stem, w, h);
+    println!("  {} ({}×{}) — 14 features …", stem, w, h);
 
     // ── 保存 resize 后的原图 ──
     save_rgb_png(&data.rgb, w, h, &out_dir.join("resized.png"))?;
@@ -239,6 +241,13 @@ fn process_one_image(
     save_gray_png(&gl_b_norm, w, h, &out_dir.join("global_lab_b_residual.png"))?;
     let t_gb = t0.elapsed();
 
+    // ── (5c) Global HSL 饱和度 residual (稳健中心) ──
+    let t0 = std::time::Instant::now();
+    let gl_sat_raw = compute_global_sat_residual(&data.hsl_s, &params.global_residual.sat);
+    let gl_sat_norm = percentile_normalize(&gl_sat_raw, p_low, p_high);
+    save_gray_png(&gl_sat_norm, w, h, &out_dir.join("global_sat_residual.png"))?;
+    let t_gs = t0.elapsed();
+
     // ── (6) Local (Gaussian) light residual ──
     let t0 = std::time::Instant::now();
     let loc_l_raw = compute_local_light_residual(&data.hsl_l, w, h, params.gauss_sigma);
@@ -259,6 +268,19 @@ fn process_one_image(
     let loc_b_norm = percentile_normalize(&loc_b_raw, p_low, p_high);
     save_gray_png(&loc_b_norm, w, h, &out_dir.join("local_lab_b_residual.png"))?;
     let t_lb = t0.elapsed();
+
+    // ── (7c) Local (Gaussian) HSL 饱和度 residual (含 post-gamma 后处理) ──
+    let t0 = std::time::Instant::now();
+    let loc_sat_gamma = compute_local_sat_residual(
+        &data.hsl_s,
+        w,
+        h,
+        params.gauss_sigma,
+        params.saturation.local_post_gamma,
+    );
+    let loc_sat_norm = percentile_normalize(&loc_sat_gamma, p_low, p_high);
+    save_gray_png(&loc_sat_norm, w, h, &out_dir.join("local_sat_residual.png"))?;
+    let t_ls = t0.elapsed();
 
     // ── (8+9) Background features (三阶段管线: 色域切分 + BFS + 软 mask) ──
     let t0 = std::time::Instant::now();
@@ -345,45 +367,51 @@ fn process_one_image(
     let t_sp = t0.elapsed();
 
     println!(
-        "    DCT={:.1}s LAB={:.1}s SR={:.1}s GL={:.1}s GA={:.1}s GB={:.1}s LL={:.1}s LA={:.1}s LB={:.1}s BG={:.1}s SP={:.1}s — fusion …",
+        "    DCT={:.1}s LAB={:.1}s SR={:.1}s GL={:.1}s GA={:.1}s GB={:.1}s GS={:.1}s LL={:.1}s LA={:.1}s LB={:.1}s LS={:.1}s BG={:.1}s SP={:.1}s — fusion …",
         t_dct.as_secs_f64(),
         t_lab.as_secs_f64(),
         t_sr.as_secs_f64(),
         t_gl.as_secs_f64(),
         t_ga.as_secs_f64(),
         t_gb.as_secs_f64(),
+        t_gs.as_secs_f64(),
         t_ll.as_secs_f64(),
         t_la.as_secs_f64(),
         t_lb.as_secs_f64(),
+        t_ls.as_secs_f64(),
         t_bg.as_secs_f64(),
         t_sp.as_secs_f64(),
     );
 
     // ── 归一化后的所有特征 ──
-    let features: [&[f64]; 12] = [
+    let features: [&[f64]; 14] = [
         &dct_norm,
         &lab_grad_norm,
         &sr_norm,
         &gl_l_norm,
         &gl_a_norm,
         &gl_b_norm,
+        &gl_sat_norm,
         &loc_l_norm,
         &loc_a_norm,
         &loc_b_norm,
+        &loc_sat_norm,
         &bg_mask_norm,
         &bg_fg_norm,
         &sp_norm,
     ];
-    let feature_names: [&str; 12] = [
+    let feature_names: [&str; 14] = [
         "dct_complexity",
         "lab_gradient",
         "spectral_residual",
         "global_light_residual",
         "global_lab_a_residual",
         "global_lab_b_residual",
+        "global_sat_residual",
         "local_light_residual",
         "local_lab_a_residual",
         "local_lab_b_residual",
+        "local_sat_residual",
         "background_mask_morph",
         "background_fg_confidence",
         "subject_prior",
