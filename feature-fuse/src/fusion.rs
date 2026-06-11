@@ -226,7 +226,7 @@ fn sq_dist(a: &[f64; 3], b: &[f64; 3]) -> f64 {
 ///   - "all":    使用全部 filtered > 0 的像素（旧行为）
 ///
 /// k-means++ 初始化使用固定种子 `impression.seed`（默认 42），保证可复现。
-/// 簇得分 = weight_sum × count，得分最高的簇的质心作为印象色返回。
+/// 簇得分 = count × mean_weight（等价于 weight_sum），得分最高的簇的质心作为印象色返回。
 pub fn kmeans_impression_color(
     rgb: &[[f64; 3]],
     filtered: &[f64],
@@ -369,7 +369,7 @@ pub fn kmeans_impression_color(
         }
     }
 
-    // 加权得分：weight_sum × count，选得分最高的簇
+    // 加权得分：count × mean_weight，等价于簇内总权重，避免把簇大小平方化。
     let mut counts = vec![0u32; k];
     let mut weight_sums = vec![0.0f64; k];
     for i in 0..n {
@@ -379,8 +379,8 @@ pub fn kmeans_impression_color(
     }
     let best = (0..k)
         .max_by(|&a, &b| {
-            let sa = weight_sums[a] * counts[a] as f64;
-            let sb = weight_sums[b] * counts[b] as f64;
+            let sa = weight_sums[a];
+            let sb = weight_sums[b];
             sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
         })
         .unwrap();
@@ -393,7 +393,7 @@ pub fn kmeans_impression_color(
 ///   - 传入 raw hybrid 时所有权重大于 0 的像素参与；传入 FiltHybrid 时只保留过滤后的像素
 ///   - 每个像素的权重 = fusion map 值（可配是否先归一化）
 ///   - 聚类更新时使用加权质心
-///   - 输出「权 × 簇大小」最大的簇的质心（而非纯粹像素数最多的簇）
+///   - 输出「簇大小 × 平均权重」最大的簇的质心（而非纯粹像素数最多的簇）
 ///
 /// 采样方式由 `impression.sample_method` 控制（同印象色聚类）。
 pub fn kmeans_weighted_color(
@@ -455,7 +455,7 @@ pub fn kmeans_weighted_color(
             w_sum += weights[i];
         }
         if w_sum > 0.0 {
-            return ([s[0] / w_sum, s[1] / w_sum, s[2] / w_sum], w_sum * n as f64);
+            return ([s[0] / w_sum, s[1] / w_sum, s[2] / w_sum], w_sum);
         }
         return ([s[0] / n as f64, s[1] / n as f64, s[2] / n as f64], 0.0);
     }
@@ -544,7 +544,7 @@ pub fn kmeans_weighted_color(
         }
     }
 
-    // ── 计算每簇的「权 × 大小」得分 ──
+    // ── 计算每簇的「大小 × 平均权重」得分 ──
     let mut counts = vec![0u32; k];
     let mut weight_sums = vec![0.0f64; k];
     for i in 0..n {
@@ -552,15 +552,15 @@ pub fn kmeans_weighted_color(
         counts[c] += 1;
         weight_sums[c] += weights[indices[i]];
     }
-    // 得分 = 总权重 × 像素数（权越大、簇越大 → 得分越高）
+    // 得分 = 像素数 × 平均权重 = 总权重（权越大、簇越大 → 得分越高）
     let best = (0..k)
         .max_by(|&a, &b| {
-            let sa = weight_sums[a] * counts[a] as f64;
-            let sb = weight_sums[b] * counts[b] as f64;
+            let sa = weight_sums[a];
+            let sb = weight_sums[b];
             sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
         })
         .unwrap();
-    let score = weight_sums[best] * counts[best] as f64;
+    let score = weight_sums[best];
     (centroids[best], score)
 }
 

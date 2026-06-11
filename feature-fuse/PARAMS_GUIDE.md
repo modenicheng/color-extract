@@ -698,6 +698,7 @@ result = hybrid^γ
 
 - `fused_original_hybrid_nothreshold.png` 使用未过滤的 raw `fused_hybrid`
 - `weighted cluster` 直接使用过滤后的 `fused_hybrid_filtered` 数值，不再二次归一化，因此会精确响应 `filter.post_normalize_min` / `filter.post_normalize_gamma`
+- filtered 聚类的最终簇得分 = `簇大小 × 簇平均权重`，等价于簇内过滤权重总和；不会再用 `weight_sum × count` 把簇大小算两次
 
 | 值 | 效果 |
 |----|------|

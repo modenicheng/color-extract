@@ -658,7 +658,7 @@ fn process_one_image(
     );
     println!("    weighted cluster: {wc_hex} (score={wc_score:.0})");
 
-    // ── 印象色：k-means++ 聚类，取最大簇 ──
+    // ── 印象色：k-means++ 聚类，取过滤权重总和最高的簇 ──
     let impression_color = kmeans_impression_color(
         &data.rgb,
         &fused_hyb_filt,
