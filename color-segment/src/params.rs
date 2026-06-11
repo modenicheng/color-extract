@@ -64,6 +64,14 @@ pub struct SegmentParams {
     /// 形态学闭运算半径 (0 = 禁用)。膨胀再腐蚀，弥合边缘图中的断裂缺口
     #[serde(default = "default_morph_close_radius")]
     pub morph_close_radius: u8,
+
+    /// 颜色距离权重 — 缩放颜色相似度测量值。>1 放大颜色差异（更难合并），<1 缩小差异（更容易合并）
+    #[serde(default = "default_color_weight")]
+    pub color_weight: f64,
+
+    /// 边缘强度权重 — 缩放边缘测量值。>1 放大边缘信号（更难跨越边界），<1 缩小边缘（更容易跨越）
+    #[serde(default = "default_edge_weight")]
+    pub edge_weight: f64,
 }
 
 // =============================================================================
@@ -118,6 +126,14 @@ fn default_morph_close_radius() -> u8 {
     0
 }
 
+fn default_color_weight() -> f64 {
+    1.0
+}
+
+fn default_edge_weight() -> f64 {
+    1.0
+}
+
 impl Default for SegmentParams {
     fn default() -> Self {
         Self {
@@ -133,6 +149,8 @@ impl Default for SegmentParams {
             merge_small_regions: default_merge_small_regions(),
             morph_open_radius: default_morph_open_radius(),
             morph_close_radius: default_morph_close_radius(),
+            color_weight: default_color_weight(),
+            edge_weight: default_edge_weight(),
         }
     }
 }
@@ -160,6 +178,8 @@ mod tests {
         assert_eq!(p.color_merge_distance, 8.0);
         assert_eq!(p.small_region_color_distance, 24.0);
         assert!(p.merge_small_regions);
+        assert_eq!(p.color_weight, 1.0);
+        assert_eq!(p.edge_weight, 1.0);
     }
 
     /// YAML 完整序列化-反序列化 round-trip：序列化默认值 → 反序列化 → 应与原始相等
@@ -190,6 +210,8 @@ mod tests {
         assert_eq!(p.edge_merge_strength, 0.05);
         assert_eq!(p.small_region_color_distance, 24.0);
         assert!(p.merge_small_regions);
+        assert_eq!(p.color_weight, 1.0);
+        assert_eq!(p.edge_weight, 1.0);
     }
 
     /// 空 YAML 应产生全默认值
@@ -198,5 +220,16 @@ mod tests {
         let yaml = "{}";
         let p: SegmentParams = serde_yaml::from_str(yaml).expect("parse empty YAML");
         assert_eq!(p, SegmentParams::default());
+    }
+
+    /// YAML 中显式指定权重参数
+    #[test]
+    fn test_weight_override() {
+        let yaml = "color_weight: 2.5\nedge_weight: 0.5\n";
+        let p: SegmentParams = serde_yaml::from_str(yaml).expect("parse weight YAML");
+        assert_eq!(p.color_weight, 2.5);
+        assert_eq!(p.edge_weight, 0.5);
+        // 其余字段保持默认
+        assert_eq!(p.min_region_area, 50);
     }
 }

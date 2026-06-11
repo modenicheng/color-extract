@@ -424,6 +424,8 @@ fn grow_regions(
     let local_limit = grow_color_limit(params) * 1.3;
     let local_limit_sq = local_limit * local_limit;
     let edge_wall = (params.edge_split_strength * 0.68).clamp(0.45, 0.85);
+    let color_weight = params.color_weight.clamp(0.25, 4.0);
+    let edge_weight = params.edge_weight.clamp(0.25, 4.0);
 
     for y in 0..h {
         let row = y * w;
@@ -437,6 +439,8 @@ fn grow_regions(
                     edge_map,
                     local_limit_sq,
                     edge_wall,
+                    color_weight,
+                    edge_weight,
                 )
             {
                 uf.union(idx, idx - 1);
@@ -449,6 +453,8 @@ fn grow_regions(
                     edge_map,
                     local_limit_sq,
                     edge_wall,
+                    color_weight,
+                    edge_weight,
                 )
             {
                 uf.union(idx, idx - w);
@@ -476,15 +482,17 @@ fn can_connect_neighbors(
     edge_map: &[f64],
     local_limit_sq: f64,
     edge_wall: f64,
+    color_weight: f64,
+    edge_weight: f64,
 ) -> bool {
     let current = features[idx];
     let next = features[nidx];
-    let sobel_hint = (edge_map[idx] + edge_map[nidx]) * 0.175;
-    if is_strong_neighbor_boundary(current, next, edge_wall) || sobel_hint >= edge_wall {
+    let sobel_hint = (edge_map[idx] + edge_map[nidx]) * 0.175 * edge_weight;
+    if is_strong_neighbor_boundary(current, next, edge_wall, edge_weight) || sobel_hint >= edge_wall {
         return false;
     }
 
-    rgb_dist_sq_u8(current, next) <= local_limit_sq
+    rgb_dist_sq_u8(current, next) * color_weight <= local_limit_sq
 }
 
 fn grow_color_limit(params: &SegmentParams) -> f64 {
@@ -522,12 +530,15 @@ fn merge_regions(
 
     let merge_limit = (params.color_merge_distance * 1.9 + 5.0).clamp(14.0, 32.0);
     let split_guard = params.edge_split_strength.clamp(0.25, 0.98);
+    let color_weight = params.color_weight.clamp(0.25, 4.0);
+    let edge_weight = params.edge_weight.clamp(0.25, 4.0);
 
     for pair in &pairs {
         let mean_edge = pair.sum_edge / pair.len as f64;
         let mean_color = pair.sum_color / pair.len as f64;
         if mean_edge <= params.edge_merge_strength
-            || (mean_color <= merge_limit && mean_edge < split_guard * 0.45)
+            || (mean_color * color_weight <= merge_limit
+                && mean_edge * edge_weight < split_guard * 0.45)
         {
             uf.union(pair.a, pair.b);
         }
@@ -560,6 +571,8 @@ fn absorb_small_regions(
     let ratio_area = (total as f64 * params.min_cluster_area_ratio).round() as usize;
     let min_area = params.min_region_area.max(ratio_area).max(1);
     let tiny_area = (min_area / 4).max(2);
+    let color_weight = params.color_weight.clamp(0.25, 4.0);
+    let edge_weight = params.edge_weight.clamp(0.25, 4.0);
     let mut ids: Vec<usize> = regions
         .iter()
         .filter(|r| r.area < min_area)
@@ -591,14 +604,14 @@ fn absorb_small_regions(
 
             if !very_tiny
                 && mean_edge >= params.edge_split_strength
-                && mean_color > params.small_region_color_distance * 1.6
+                && mean_color * color_weight > params.small_region_color_distance * 1.6
             {
                 continue;
             }
 
             let boundary_bonus = (pair.len as f64).sqrt() * 3.0;
             let area_bonus = ((regions[other].area as f64).ln_1p()).min(12.0);
-            let score = mean_color + mean_edge * 35.0 - boundary_bonus - area_bonus;
+            let score = mean_color * color_weight + mean_edge * edge_weight * 35.0 - boundary_bonus - area_bonus;
             match best {
                 Some((_, best_score)) if best_score <= score => {}
                 _ => best = Some((other, score)),
@@ -786,18 +799,18 @@ fn direct_edge_strength(a: PixelFeature, b: PixelFeature) -> f64 {
     rgb.max(dy).max(chroma).clamp(0.0, 1.0)
 }
 
-fn is_strong_neighbor_boundary(a: PixelFeature, b: PixelFeature, edge_wall: f64) -> bool {
-    let rgb_limit = edge_wall * 72.0;
+fn is_strong_neighbor_boundary(a: PixelFeature, b: PixelFeature, edge_wall: f64, edge_weight: f64) -> bool {
+    let rgb_limit = edge_wall * 72.0 / edge_weight;
     if rgb_dist_sq_u8(a, b) >= rgb_limit * rgb_limit {
         return true;
     }
 
-    let y_limit = (edge_wall * 42.0) as i16;
+    let y_limit = (edge_wall * 42.0 / edge_weight) as i16;
     if (a.y - b.y).abs() >= y_limit {
         return true;
     }
 
-    let chroma_limit = (edge_wall * 180.0) as i16;
+    let chroma_limit = (edge_wall * 180.0 / edge_weight) as i16;
     (a.co - b.co).abs() + (a.cg - b.cg).abs() >= chroma_limit
 }
 
