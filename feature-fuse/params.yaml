@@ -1,78 +1,31 @@
 # =============================================================================
-# feature-fuse 参数配置
-# 修改后无需重新编译，直接运行即可生效
-# 留空/缺失的字段会使用 serde 默认值（或报错）
+# feature-fuse 参数配置 — 修改后无需重新编译，直接运行即可生效
+# 详细文档: PARAMS_GUIDE.md
 # =============================================================================
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 1. 图片预处理
 # ═════════════════════════════════════════════════════════════════════════════
-
-# 图片最长边限制（像素）。
-# 输入图若长边 > max_dim，按 Lanczos3 等比缩放到 max_dim。
-# 调小 → 速度更快、特征更粗糙；调大 → 细节保留更多、内存+时间更大。
-# 建议范围: 360~1280，默认 720 在速度和精度间平衡较好。
+# max_dim: 最长边 Lanczos3 等比缩放（建议 360~1280，默认 720）
 max_dim: 512
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 2. 局部 Gaussian 残差参数
+# 2. 局部 Gaussian 残差
 # ═════════════════════════════════════════════════════════════════════════════
-# Gaussian 模糊的 sigma（标准差），用于 local_light / local_lab_a / local_lab_b 残差计算。
-# 原理: |原图 - Gaussian模糊图|，模糊后丢失的细节即为"局部残差"。
-# sigma 越大 → 模糊越强 → 残差捕获更大尺度的局部变化（粗纹理/色块）。
-# sigma 越小 → 模糊越弱 → 残差只捕获细微边缘（细纹理/噪点）。
-# 建议范围: 5~80，默认 35.0 适合中等尺度的局部细节。
+# gauss_sigma: 模糊 sigma，越大捕获越粗的局部变化（建议 5~80，默认 35）
 gauss_sigma: 12.0
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 3. Percentile 归一化（所有特征图共用）
+# 3. Percentile 归一化（所有特征图共用，消除离群值影响）
 # ═════════════════════════════════════════════════════════════════════════════
-
-# 每张特征图计算完成后，做 percentile 截断 + 线性映射到 [0, 1]。
-# 这样做可以消除离群值对归一化的影响，让特征图对比度更稳定。
 percentile:
-  low: 1.0 # 低于此百分位的像素值 → 置 0（去除暗部离群值）
-  high: 99.0 # 高于此百分位的像素值 → 置 1（去除亮部离群值）
-
-# 调参说明:
-#   low 调大 (如 5.0) → 压制更多暗区噪声，特征图暗部更"干净"，但可能丢失弱信号。
-#   high 调小 (如 95.0) → 增强亮部对比度，让高响应区域更突出，但可能过曝。
-#   极端情况 low=0 / high=100 → 等价于 min-max 归一化（易受离群值干扰）。
-# 建议范围: low 0~5, high 95~100，默认 (1, 99) 对大多数图效果稳健。
+  low: 1.0
+  high: 99.0
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 4. 全局残差基准值选择（稳健中心估计）
+# 4. 全局残差基准值（稳健中心估计: 压缩→截断→trimmed_mean+median 混合→残差）
+#    compression: gamma | log; trim: 截断百分位; weight: 混合系数
 # ═════════════════════════════════════════════════════════════════════════════
-#
-#   light / lab_a / lab_b 各有一套独立的稳健中心参数，结构一致。
-#
-# 流程: 1. 感知压缩 (gamma 或 log)
-#       2. 压缩域 clip 到 [p{trim_low}, p{trim_high}]
-#       3. trimmed_mean
-#       4. 混合: trimmed_mean_weight × trimmed_mean + median_weight × median
-#       5. 从压缩域还原到 [0, 1]
-#       6. 残差 = |像素值 - center|
-#
-# 必要字段:
-#   compression       "gamma" — pow(gamma_power) | "log" — log_base(1+eps) 归一化
-#   trim_low / high   压缩域截断百分位，剔除离群值
-#
-# 可选字段（不填则使用下方标注的默认值）:
-#   trimmed_mean_weight  混合系数，默认 0.65
-#   median_weight        混合系数，默认 0.35
-#   gamma_power          gamma 压缩指数，默认 0.5
-#   log_base             log 底数，默认 e
-#
-# 正确配置示例（当前 light 未填，全部使用默认值）:
-#   light:
-#     compression: gamma
-#     trim_low: 2.0
-#     trim_high: 98.0
-#     trimmed_mean_weight: 0.7
-#     median_weight: 0.3
-#     gamma_power: 0.4
-#     # log_base: 10.0       # 仅 compression=log 时有效
-
 global_residual:
   light:
     compression: gamma
@@ -80,9 +33,7 @@ global_residual:
     trim_high: 95.0
     trimmed_mean_weight: 0.7
     median_weight: 0.3
-    gamma_power: 1 # 仅 compression=gamma 时有效
-    # log_base: 2.718
-  # Lab a* 红-绿轴全局残差。a* ≈ [-128, 127]，计算时自动归一化到 [0,1]。
+    gamma_power: 1
   lab_a:
     compression: gamma
     trim_low: 2.0
@@ -90,8 +41,6 @@ global_residual:
     trimmed_mean_weight: 0.65
     median_weight: 0.35
     gamma_power: 1
-
-  # Lab b* 黄-蓝轴全局残差。b* ≈ [-128, 127]，计算时自动归一化到 [0,1]。
   lab_b:
     compression: gamma
     trim_low: 2.0
@@ -99,8 +48,6 @@ global_residual:
     trimmed_mean_weight: 0.65
     median_weight: 0.35
     gamma_power: 1
-
-  # HSL 饱和度全局残差。hsl_s 已是 [0, 1]，直接做稳健中心残差。
   sat:
     compression: gamma
     trim_low: 2.0
@@ -110,143 +57,19 @@ global_residual:
     gamma_power: 1
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 4a. 饱和度特征后处理参数
+# 4a. 饱和度后处理 — 局部饱和度残差的 post-gamma 压缩
+#     <1 抬升低值（更多微弱色彩变化被响应），>1 压制低值（只有高差异幸存）
 # ═════════════════════════════════════════════════════════════════════════════
-# 专用于本地饱和度残差的 post-gamma 压缩。
-#
-#   local_post_gamma: 局部饱和度残差后处理指数。
-#     在 Gaussian 残差计算后、percentile 归一化前: sat = raw^gamma。
-#     <1 (如 0.5) → 抬升低饱和度差异 → 更多"微弱色彩变化"被响应。
-#     =1 → 无变化。
-#     >1 (如 2.0) → 压制低值 → 只有高饱和度差异幸存。
-#     建议范围: 0.3~3.0，默认 1.0。
 saturation:
   local_post_gamma: 1.0
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 4b. 背景估计参数（三阶段管线: 色域切分 + BFS 连通 + 软 mask）
+# 4b. 背景估计（三阶段: Median Cut 色域切分 → BFS 连通+形态学 → 软 mask）
+#     partition:    色域切分与背景簇评分
+#     morphology:   闭→开→腐蚀，填充孔洞、去除噪声
+#     flood_barrier: BFS 前景结构阻断，防背景 flood 吞掉主体细节
+#     soft_mask:    边界原型色高斯距离软似然 + 前景置信度
 # ═════════════════════════════════════════════════════════════════════════════
-#
-# 三阶段管线:
-#   Phase 1 —  Median Cut 色域切分: 将像素在 LAB 空间递归二分，每层选方差最大
-#              通道的 median 切分。停止条件: depth ≥ max_depth 或总方差 <
-#              variance_threshold。合并小簇后缩减至 ≤ max_clusters。对每个簇按
-#              边界占比 + 色调距离评分，阈值筛选为背景候选。
-#   Phase 2 —  BFS 连通 + 前景结构阻断 + 形态学: 从边界背景候选种子出发做 4-邻域
-#              BFS 区域生长。扩张必须同时满足颜色背景似然、LAB 距离和非 barrier，
-#              避免连接到边界的发丝、披帛、衣物纹理被背景 flood 吞掉。
-#              再做闭→开→腐蚀，填充孔洞、去除噪声。max_bg_ratio 保护防止过度检测。
-#   Phase 3 —  软 mask 精炼: 从边界采样最多 96 个原型色，逐像素计算高斯距离相似度
-#              → 软背景似然图。根据硬 mask 的统计特性自适应混合硬/软 mask。
-#              硬 mask 退化为常量时，BGM-Mask 会回退为软前景置信度。
-#              前景置信度 = 反背景似然 ×0.45 + 中心偏向 ×0.40 + 显著性占位 ×0.15。
-#
-# 两幅输出特征图（均为前景导向，高值=前景）:
-#   - background_mask_morph:       前景导向 mask，硬分区弱混合软前景置信度以保留边缘
-#   - background_fg_confidence:    软置信度（值域 [0,1]），经 box blur 平滑
-#
-# ── Phase 1: Color Partition (Median Cut) ──
-#
-# partition.enabled (默认 true)
-#   是否启用色域切分做背景估计。false → 两个输出特征图全为 1.0（所有像素视为前景），
-#   背景相关权重退化为常数乘以 1.0。适用于主体撑满画面、无法从边界推断背景的场景。
-#
-# partition.max_depth (默认 5, 建议 4~8)
-#   Median Cut 最大递归深度。每深一层，当前簇沿 LAB 方差最大通道的 median 一分为二。
-#   最大叶簇数 = 2^max_depth（depth=5 → 最多 32 簇，合并前）。
-#   调大 → 更细的颜色分区，捕获微秒色调差异；调小 → 更粗的分区，减少后续合并开销。
-#
-# partition.max_clusters (默认 16, 建议 6~24)
-#   合并小簇后若簇数仍超此值，反复将最小簇合并到 LAB 距离最近的大簇，直至 ≤ 上限。
-#   调大 → 保留更多颜色簇进入评分阶段，可能引入噪声；调小 → 合并更激进，可能把
-#   不同的颜色混在一起，降低区分能力。
-#
-# partition.variance_threshold (默认 0.1, 建议 0.03~0.3)
-#   LAB 三通道方差之和（var_L + var_a + var_b）低于此值则停止切分。值域未经归一化，
-#   所以阈值依赖 LAB 数值大小（L 0~100, a/b 约 ±128）。
-#   调大 → 更早停止切分（更多区域被判为"已足够均匀"），适合色块分明的插画/设计图。
-#   调小 → 继续切分直至区分出微妙颜色渐变，适合自然摄影。
-#
-# partition.min_cluster_area_ratio (默认 0.01, 建议 0.0~0.05)
-#   像素数低于 total_pixels × ratio 的簇视为"小簇"，合并到 LAB 距离最近的大簇。
-#   ratio=0.01 表示小于 1% 图像面积的簇被清除。0 → 不合并（保留所有微小簇）。
-#   调大 → 更激进地清除噪点色块，但也可能吞掉小而重要的颜色区域。
-#
-# partition.border_band (默认 3, 建议 2~20)
-#   图像四周的采样条带宽度（像素）。同时用于:
-#     1) 采样边界像素计算背景 LAB 原型色（为每个簇的色调距离提供参照）
-#     2) BFS 种子点选取（只有条带内且 mask ≥ bg_score_threshold 的像素可做种子）
-#     3) Phase 3 软 mask 的原型色采样（最多 96 个边界像素）
-#   调大 → 采样更多边界像素，对边角有非典型颜色的图像更鲁棒，但可能包含边缘主体像素。
-#   调小 → 更严格的边界定义，只在最外缘采样。
-#
-# partition.bg_score_threshold (默认 0.55, 建议 0.35~0.75)
-#   背景评分阈值。簇评分 = border_ratio × 0.6 + (1 - center_dist) × 0.4，其中
-#   border_ratio = 簇中位于边界 band 内的像素占比，center_dist = 簇均值 LAB 到
-#   边界 LAB 原型色的归一化距离。评分 ≥ 阈值 → 该簇归为背景 (mask=1)。
-#   调大 → 更保守（只有强烈边界+色调证据的簇才判为背景），主体更完整但背景残留更多。
-#   调小 → 更激进（中低证据的簇也判为背景），背景更干净但可能误伤主体。
-#
-# partition.bg_connect_threshold (默认 0.08, 建议 0.03~0.15)
-#   BFS 区域生长的 LAB 距离阈值。对邻域像素计算 dist = sqrt( (ΔL/100)² + (Δa/128)²
-#   + (Δb/128)² )。dist ≤ 阈值 → 加入连通背景。归一化因子使距离近似感知均匀。
-#   调大 → BFS 扩散到更多颜色 → 更多像素被划为背景；调小 → 只在极相似颜色间传播。
-#
-# partition.max_bg_ratio (默认 0.85, 建议 0.5~0.95)
-#   最大背景占比安全阀。两次检查分别在 BFS 后和 morph 后: 若 mask_mean > ratio，
-#   放弃 BFS/morph 结果，回退到原始簇 mask。防止背景检测器在主体大且触边的图上
-#   "淹没"画面。调大 → 允许更多像素被划为背景才触发回退；调小 → 更严格限制背景范围。
-#
-# ── Phase 2: Morphology ──
-#
-# morphology.close_radius (默认 8, 建议 0~15)
-#   闭运算（先膨胀再腐蚀）半径。闭合填充背景 mask 中的小空洞（被背景包围的前景孤岛）。
-#   公式: closed = erode(dilate(mask, r), r)。膨胀: 邻域 (2r+1)² 内任一点 ≥0.5→1。
-#   腐蚀: 邻域内全部 ≥0.5 才保留。调大 → 填充更大空洞，去除非连通的前景噪点。
-#   0 → 跳过闭合。
-#
-# morphology.open_radius (默认 2, 建议 0~5)
-#   开运算（先腐蚀再膨胀）半径。去除背景 mask 中的小前景噪声块。
-#   公式: opened = dilate(erode(mask, r), r)。调大 → 消除更大的噪声散点。
-#   0 → 跳过开运算。
-#
-# morphology.erode_radius (默认 3, 建议 0~6)
-#   最终腐蚀半径。腐蚀背景 mask → 缩小背景区域 → 等效于扩展前景。
-#   在背景边界处削去一条宽带，使前景 mask 稍微"撑大"，覆盖物体边缘可能被
-#   错误判为背景的过渡像素。调大 → 更激进地扩展前景。0 → 跳过最终腐蚀。
-#
-# ── Phase 2b: Flood Barrier / Foreground Protect ──
-#
-# flood_barrier.enabled (默认 true)
-#   是否启用背景 flood 的前景结构阻断。关闭后退回旧式 LAB 连通扩张。
-#
-# flood_barrier.color_threshold (默认 0.45)
-#   背景颜色似然阈值。BFS 只能扩张到 border_bg > threshold 的像素。
-#   调大 → 背景扩张更保守；调小 → 平滑浅色背景更容易被连通识别。
-#
-# flood_barrier.barrier_color_relax_threshold (默认 0.92)
-#   高置信背景放行阈值。border_bg ≥ 此值时忽略结构 barrier，避免平滑白背景被
-#   DCT/残差归一化噪声误挡。调高 → barrier 更严格；调低 → 背景更容易连通。
-#
-# flood_barrier.*_stop
-#   barrier 阈值。任一结构图超过阈值即阻断 BFS: lab_grad / dct / local_light / spectral。
-#   调低 → 更强保护前景细节；调高 → 更少阻断，背景识别更完整。
-#
-# flood_barrier.protect_strength (默认 0.75)
-#   morphology 后的软保护强度: bg_mask *= 1 - strength * foreground_protect。
-#   调大 → 更积极从背景 mask 扣回高纹理/高边缘区域；调小 → 更保留背景 mask。
-#
-# flood_barrier.protect_p_low/high (默认 70/99)
-#   foreground_protect 的 percentile normalize 范围。默认只强调结构分数靠前的区域。
-#
-# ── Phase 3: Soft Mask (box blur 参数见 soft_mask 配置段) ──
-#
-# 此阶段 border_bg_blur_radius 和 fg_confidence_blur_radius 控制两处 box blur。
-# 高斯距离衰减 exp(-(dist/0.16)²) 生成软背景似然。soft_background_from_partition
-# 根据硬 mask 统计特性自适应混合: 纯黑/纯白 → 权 0（全用软似然），二值混合 → 权
-# 0.08，多值 → 权 0.15。fg_confidence 结合了颜色反背景、中心偏向、显著性占位，
-# 经盒式模糊、可选反遮罩锐化，再做 percentile 归一化。
-
 background:
   partition:
     enabled: true
@@ -259,12 +82,12 @@ background:
     bg_connect_threshold: 0.10
     max_bg_ratio: 0.88
   morphology:
-    open_radius: 2 # 无显著作用，大值
+    open_radius: 2
     close_radius: 8
     erode_radius: 2
   flood_barrier:
     enabled: true
-    grad_stop: 0.51  # 避免背景边界阻断背景识别
+    grad_stop: 0.51
     dct_stop: 0.45
     local_light_stop: 0.40
     spectral_stop: 0.50
@@ -277,46 +100,17 @@ background:
     protect_dct_weight: 0.25
     protect_spectral_weight: 0.15
     protect_local_light_weight: 0.15
-    # 当前实现用 max(local_lab_a_residual, local_lab_b_residual) 作为 local_sat / local_lab_ab 代理。
     protect_local_sat_weight: 0.15
   soft_mask:
-    # 边界背景似然图的 box blur 半径。
-    # 作用于 Phase 3 border_background_likelihood 输出: 对"像素与边界原型色相似度"图做盒式模糊。
-    # 0 = 自适应（分辨率相关: clamp(min(w,h)/48, 4, 16)，对应 720p 约为 15px）。
-    # >0 = 固定像素半径。半径越大 → 软背景似然越平滑、边缘过渡越柔和。
-    # 默认 0 适用大多数场景；若背景色斑驳可调大 (如 20~30) 使似然图更均匀。
     border_bg_blur_radius: 1
-    # 前景置信度图的 box blur 半径。
-    # 作用于 Phase 3 soft_foreground_from_background 输出: 对"颜色反背景+中心偏向+显著性"融合图做盒式模糊。
-    # 0 = 自适应（分辨率相关: clamp(min(w,h)/40, 6, 24)，对应 720p 约为 18px）。
-    # >0 = 固定像素半径。半径越大 → 前景置信度越平滑、主体轮廓边缘越软。
-    # 默认 0 适用大多数场景；若主体边缘有锯齿可调大 (如 30~40) 使过渡更自然。
     fg_confidence_blur_radius: 1
-    # 前景置信度反遮罩锐化强度。
-    # 作用于 fg_confidence_blur_radius 之后、percentile 归一化之前: v + (v - blur(v)) * amount。
-    # 0 = 禁用；0.2~0.5 = 温和提边；0.8+ 会更硬，也更容易放大噪声或纹理。
     fg_confidence_sharpen_amount: 0.40
-    # 反遮罩锐化半径。半径越大 → 提升更宽的轮廓过渡；1~3 更适合保留细边缘。
     fg_confidence_sharpen_radius: 1
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 4c. Subject Prior（高斯中心偏向）
+# 4c. Subject Prior — 2D 高斯中心偏向: exp(-(dx²+dy²))
+#     radius=0 → 特征退化（仅中心像素有值），等效禁用
 # ═════════════════════════════════════════════════════════════════════════════
-#
-# 公式: value = exp(-(dx² + dy²))，其中 dx = (nx - center_x) / radius_x，
-# dy = (ny - center_y) / radius_y，nx/ny = 归一化像素坐标 [0,1]。
-# 生成一个以 (center_x, center_y) 为中心的 2D 高斯权重图: 中心=1.0，边缘≈0。
-#
-# center_x/y: 高斯中心（归一化坐标，0~1）。
-#   默认 (0.5, 0.55) — 略偏下的构图中心，符合常见人物/静物构图习惯。
-#   可调整为照片中的实际主体位置以提供更强的先验引导。
-#
-# radius_x/y: 高斯半径（归一化坐标，0~1）。
-#   越大 → 衰减越慢 → 高斯覆盖面越宽，更多像素获得较高先验值。
-#   越小 → 衰减越快 → 只有非常靠近中心的像素才有显著先验（更尖锐的先验）。
-#   radius_x=0 或 radius_y=0 → 分母趋于 0，除中心像素外所有值 ≈ 0，
-#   等效于禁用 subject_prior 特征（整图 ≈0），在融合中不贡献权重。
-
 subject_prior:
   center_x: 0.5
   center_y: 0.55
@@ -324,12 +118,11 @@ subject_prior:
   radius_y: 0.0
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 4d. Segment-aware Region Priors（color-segment 区域先验）
+# 4d. Segment-aware Region Priors（color-segment 色块分割 → 区域评分 → 下游修正）
+#     ① segment:        Union-Find 区域生长（color_weight=edge 敏感度, edge_weight=轮廓尊重度）
+#     ② region_scoring: 每区域计算 saliency / bg_probability / subject_confidence
+#     ③ dynamic_weights: 特征权重按区域分离度+显著度相关性+前背景分离度动态调整
 # ═════════════════════════════════════════════════════════════════════════════
-#
-# 复用 color-segment 的色块分割结果，为背景修正、动态权重和主色提取提供区域级证据。
-# 集成路径使用 feature-fuse 已 resize 后的图像，不再按 segment.preprocess_max_dim 二次缩放。
-
 segment_fusion:
   enabled: true
   background_bias: balanced   # balanced / subject / background
@@ -377,49 +170,9 @@ segment_fusion:
     bg_suppression_weight: 0.20
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 5. 特征权重
+# 5. 特征权重 — 18 维，两套独立（add 加法 / mul 软乘法），自动归一化
+#    权重设为 0 → 该特征不参与融合
 # ═════════════════════════════════════════════════════════════════════════════
-#
-# 两套独立的 18 维权重:
-#   - weights_add: 加法分支（加权求和）
-#   - weights_mul: 乘法分支（加权软乘法，各特征概率相乘）
-#
-# 每组权重内部会自动归一化（除以总和），所以不必刻意让总和为 1。
-# 某特征权重设 0 → 该特征不参与融合；设越大 → 该特征对结果影响越大。
-#
-# ┌──────────────────────┬────────┬──────────────────────────────────────────────┐
-# │ 特征                  │ 默认值  │ 调大则更关注…                               │
-# ├──────────────────────┼────────┼──────────────────────────────────────────────┤
-# │ dct                  │  0.22  │ 纯色/平滑背景区域（高频纹理少的地方）被压制   │
-# │ lab_grad             │  0.22  │ 结构边缘（线条、轮廓）被高亮                  │
-# │ spectral             │  0.12  │ 全局视觉显著区域（突兀物体）被突出            │
-# │ global_light         │  0.05  │ 偏离整体亮度的色块（亮/暗异常区域）           │
-# │ global_lab_a         │  0.09  │ 偏离全局 a* 红-绿色调的像素（暖调/冷调异常） │
-# │ global_lab_b         │  0.09  │ 偏离全局 b* 黄-蓝色调的像素                  │
-# │ global_sat           │  0.05  │ 偏离全局饱和度的像素（鲜艳/素雅异常）         │
-# │ local_light          │  0.06  │ HSL 局部亮度细节（精细光影变化）              │
-# │ local_lab_a          │  0.04  │ LAB a* 局部残差（红-绿轴细节变化）            │
-# │ local_lab_b          │  0.04  │ LAB b* 局部残差（黄-蓝轴细节变化）            │
-# │ local_sat            │  0.03  │ HSL 局部饱和度残差（鲜艳色块边缘）            │
-# │ background_mask_morph│  0.30  │ 三阶段硬 mask（1=前景/0=背景）。调大→按背景掩膜严格裁剪 │
-# │ background_fg_conf   │  0.30  │ 三阶段软置信度（0~1）。调大→更依赖背景管线的主体判断    │
-# │ subject_prior        │  0.10  │ 离画面中心越近权重越高（构图中心偏向）       │
-# │ abs_light            │  0.04  │ 绝对 L* 明度通道（亮→暗直接映射）            │
-# │ abs_lab_a            │  0.04  │ 绝对 a* 红绿色通道（绿→红直接映射）          │
-# │ abs_lab_b            │  0.04  │ 绝对 b* 黄蓝色通道（蓝→黄直接映射）          │
-# │ abs_sat              │  0.03  │ 绝对饱和度通道（鲜艳→素雅直接映射）          │
-# └──────────────────────┴────────┴──────────────────────────────────────────────┘
-#
-# 常见调参策略:
-#   • 想突出构图主体 → 增大 spectral / lab_grad
-#   • 想压制纯色背景 → 增大 dct
-#   • 想保留全局色彩印象 → 增大 global_light + global_lab_a/b
-#   • 想增强局部纹理细节 → 增大 local_light + local_lab_a/b
-#   • 想利用背景分割裁剪主体 → 增大 background_mask_morph + background_fg_confidence
-#   • 背景管线过度检测时可降低 bg_score_threshold / 调大 max_bg_ratio
-#   • 背景管线检测不足时可调高 bg_score_threshold / 增大 border_band
-#   • 可以某一分支全部设 0，等价于只用另一分支
-
 weights_add:
   dct: 0.1
   lab_grad: 0.02
@@ -440,10 +193,6 @@ weights_add:
   abs_lab_b: 0.03
   abs_sat: 0.06
 
-# 乘法分支权重（与加法独立，可完全不同）
-# 乘法分支 = 软乘法: score = product( (ε + (1-ε)*feat_i)^w_i )
-# 特性: 任一特征值接近 0 时，乘积会被"拉低"，所以乘法分支比加法更"保守"。
-#       适合用于"所有特征同时认可"的区域才高亮的场景。
 weights_mul:
   dct: 0.01
   lab_grad: 0.00
@@ -465,156 +214,65 @@ weights_mul:
   abs_sat: 0.09
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 6. Hybrid Fusion 参数
+# 6. Hybrid Fusion — hybrid = α×add + (1-α)×softmul, result = hybrid^γ
+#    alpha: 0=纯乘法(严格), 1=纯加法(慷慨)
+#    gamma: <1 提亮, =1 无变化, >1 压暗增强对比
+#    epsilon: 乘法 baseline，防零值归零
 # ═════════════════════════════════════════════════════════════════════════════
-#
-# 融合公式:
-#   hybrid = α × add_score + (1-α) × softmul_score
-#   result = hybrid^γ
-#
-# 其中 add_score = Σ(w_i × feat_i)，softmul_score = exp(Σ(w_i × ln(ε + (1-ε)×feat_i)))
-
 fusion:
-  # 加法/乘法混合比。0=纯软乘，1=纯加法，中间值混合两者。
-  #   偏加法 (α≈1) → 结果更"慷慨"，任一特征高亮就能体现在结果中。
-  #   偏乘法 (α≈0) → 结果更"严格"，需要多特征同时高亮才响应。
-  # 建议范围: 0.0~1.0，默认 0.10 偏向软乘法（更精细）。
   alpha: 0.15
-
-  # 最终对比度调整指数（对 [0,1] 内的每个像素做 powf(gamma)）。
-  #   gamma < 1 → 整体提亮（暗区提升明显），对比度降低。
-  #   gamma = 1 → 无变化（线性映射）。
-  #   gamma > 1 → 整体压暗，亮区更亮、暗区更暗，对比度增强。
-  # 建议范围: 0.3~2.0，默认 1.0 不做额外调整。
   gamma: 2.0
-
-  # 软乘法 baseline。防止某特征值为 0 时乘积归零。
-  # 实际公式中用 (ε + (1-ε)*feat) 替代原始 feat。
-  #   ε→0 → 乘法效果更强（任一特征为 0 则乘积≈0，严格 AND 行为）。
-  #   ε→1 → 乘法退化 ≈ 加法（baseline 起主导，特征贡献被稀释）。
-  # 建议范围: 0.01~0.50，默认 0.15 平衡了严格性和稳健性。
   epsilon: 0.10
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 6a. Direct Blend 参数（无阈值过滤的 Hybrid × 原图 + 加权聚类预测色）
+# 6a. Direct Blend — hybrid × 原图 + 加权聚类预测色
+#     normalize_before: 是否先对 hybrid 做 min-max 归一化
 # ═════════════════════════════════════════════════════════════════════════════
-#
-# normalize_before: 在乘原图或加权聚类之前是否先对 hybrid 做 [0,1] 归一化。
-#   false → 直接使用 fusion 输出的 hybrid 值（已做过 gamma/clamp，范围在 [0,1] 内）。
-#   true  → 先 min-max 归一化到 [0,1] 再使用（适用于 hybrid 输出动态范围很窄的场景）。
-#   与 filter.normalize_before 独立，可分别配置。
-
 direct_blend:
   normalize_before: false
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 7. 最终 Fuse 图过滤（阈值法 / 分位数法，互斥）
+# 7. 最终过滤（threshold / quantile 互斥）
 # ═════════════════════════════════════════════════════════════════════════════
-#
-# 两种过滤方案互斥，通过 filter.method 选择:
-#   "threshold" — 阈值法: 亮度 ≥ t 的像素保留，＜ t 的置黑
-#   "quantile"  — 分位数法: 只保留亮度从高到低前 p% 的像素，其余置黑
-#
-# 若同时配置了两种方法（或 method 值不合法），程序启动时会 panic。
-#
-# 阈值法参数 (method = threshold):
-#   threshold:         亮度阈值 [0, 1]，像素亮度 ≥ 此值时保留，否则置 0
-#   normalize_before:  若为 true，先对亮度做 [0,1] 归一化再比较阈值
-#
-# 分位数法参数 (method = quantile):
-#   quantile:          保留亮度前百分之几的像素 (0, 100]
-#
-# 无论哪种方法，过滤后保存为 fused_add_filtered.png / fused_softmul_filtered.png / fused_hybrid_filtered.png
-
 filter:
   method: threshold
-  threshold: 0.18  # 纯色背景原始值一般极低，可以被小的阈值有效移除，同时保留大部分细节，共后续聚类处理，避免聚类有严重偏差
+  threshold: 0.18
   normalize_before: true
-  # method: quantile
-  # quantile: 10.0
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 8. Contact Sheet 拼贴图布局（仅影响输出排版，不影响特征计算）
+# 8. Contact Sheet 排版（仅影响输出，不影响计算）
 # ═════════════════════════════════════════════════════════════════════════════
-
 contact_sheet:
-  cols: 7 # 列数（总格数 = cols × rows，默认 5×4=20 格容纳 1 原图 + 7 特征 + 6 融合 + 1 空位印时间戳）
-  rows: 5 # 行数（18特征 + 原图 → 4行 + 融合/过滤各1行 = 6行）
-  pad: 4 # 单元格间距（像素）
-  thumb_w: 240 # 每个单元格的最大宽度（像素），高度按原图比例自动计算
-  label_h: 16 # 单元格底部标签区域高度（像素）
+  cols: 10
+  rows: 5
+  pad: 4
+  thumb_w: 240
+  label_h: 16
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 9. DCT 纹理复杂度参数
+# 9. DCT 纹理复杂度 — 8×8 滑动窗口高频比率判定
+#     high_freq_threshold: u+v≥T 的对角线阈值（建议 2~8，默认 3—42/63 AC 系数）
 # ═════════════════════════════════════════════════════════════════════════════
-#
-# high_freq_threshold: DCT 高频分量判定阈值。
-#   对每个 8×8 逐像素滑动窗口做 Type-II DCT，计算高频比率:
-#     ratio = Σ_{u+v ≥ T} F(u,v)² / (Σ_{all AC} F(u,v)² + 1e-10)
-#   即对角线 u+v=T 以下的系数能量占所有 AC 系数的比例（排除 DC 分量）。
-#   调大 (如 6~8) → 只有极高频率算纹理 → 平滑区更大，只保留最强纹理。
-#   调小 (如 2~3) → 更多系数算高频 → 纹理检测更敏感，噪声也可能被响应。
-#   阈值与 AC 系数数量: T=2→56/63, T=3→42/63, T=4→30/63, T=6→12/63, T=8→2/63
-#   建议范围: 2~8，默认 3（42/63 个 AC 系数判定为高频）。
-#
-# 注: DCT 块大小固定为 8，窗口以每个像素为中心采样 8×8 邻域（滑动窗口，非分块）。
-
 dct:
   high_freq_threshold: 3
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 10. 频谱残差显著性参数
+# 10. 频谱残差显著性 — R = ln|F| − avg_filter(ln|F|)
+#     mean_filter_kernel: 谱均值滤波核（建议 1~15，默认 3）
+#     gaussian_sigma:     重构后 blur（建议 0~10，默认 3）
+#     gamma:              FFT 前 L* gamma 校正（<1 提亮暗部）
+#     post_gamma:         最终显著图 gamma（<1 慷慨，>1 严格）
 # ═════════════════════════════════════════════════════════════════════════════
-#
-# mean_filter_kernel: 均值滤波核大小，作用于 FFT 对数幅度谱:
-#   R(u,v) = ln|F(u,v)| - avg_filter(ln|F(u,v)|, kernel)
-#   即"频谱减平均谱"——剩下的就是显著信号的谱残差。实际核尺寸 = kernel（奇数时）
-#   或 kernel+1（偶数时）。当 kernel=10 时实际为 11×11 均值滤波。
-#   核越大 → 平均谱越平滑 → 残差捕获更全局的谱异常（大尺度显著区域）。
-#   核越小 → 平均谱更贴近原始 → 残差捕获更精细的谱峰（纹理/边缘）。
-#   kernel=1 → 均值=原始 → 残差=0 → 所有频率振幅=1 → 退化为相位谱显著图（POT/边缘图）。
-#   建议范围: 1~15，默认 3（3×3 均值滤波）。
-#
-# gaussian_sigma: IFFT 重构后的 saliency map Gaussian blur 标准差。
-#   用于平滑重构噪声，使显著区域更连续。
-#   sigma 越大 → 平滑更强 → 显著区域更模糊、更大片。
-#   sigma 越小 → 保留更多高频细节 → 显著图更精细。
-#   0 = 不 blur。
-#   建议范围: 0~10，默认 3.0。
-#
-# gamma: FFT 前对 L* 通道（亮度，始终 [0,1]）做 gamma 校正。a*、b* 不做处理。
-#   gamma 压缩 (gamma<1) 可提亮暗部细节，使低频区域的谱残差更显著。
-#   gamma 扩展 (gamma>1) 压制暗部。
-#   1.0 = 无变化。
-#   建议范围: 0.3~3.0，默认 1.0。
-
 spectral_residual:
   mean_filter_kernel: 10
   gaussian_sigma: 1.0
   gamma: 0.81
-  # 后处理 gamma 压缩（L₂ 融合 + 归一化后对最终显著图做 powf）。
-  # 作用于已归一化到 [0,1] 的融合显著图: S_final = S^post_gamma。
-  # <1 (如 0.5) → 凹函数，抬升低值区域 → 更多像素获得显著响应（更"慷慨"）。
-  # >1 (如 2.0) → 凸函数，压制低值区域 → 只有最高显著峰幸存（更"严格"、更稀疏）。
-  # =1.0 → 跳过 powf，无变化。建议范围 0.3~3.0，默认 1.0。
   post_gamma: 0.9
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 11. 印象色聚类参数
+# 11. 印象色聚类 — 加权 K-Means++
+#     sample_method: stride(间隔采样) | all(全像素)
 # ═════════════════════════════════════════════════════════════════════════════
-#
-# k: 聚类数量。默认 4。调大→更细分，调小→更概括。
-# max_iter: K-means Lloyd 迭代次数上限。默认 10。通常 5~10 次即可收敛。
-# sample_method: 采样方式。
-#   "stride" — 间隔规律网格采样: 每隔 sample_stride 行/列取一个显著像素，
-#              保留空间分布均匀性，避免随机偏差，且加速聚类。
-#   "all"    — 使用全部 filtered > 0 的像素（旧行为，精度高但速度慢）。
-# sample_stride: 网格采样步长 (仅 sample_method="stride" 时生效)。
-#   stride=1 等价于 "all"。stride=4 表示每 4 个像素取一个，样本量约为 1/16。
-#   建议范围: 2~8。默认 4 在速度与精度间平衡较好。
-# seed: K-Means++ 初始化的随机数种子。固定种子保证同图同参数结果可复现。
-#   默认 42。可改为任意 u64 值。若需不同初始化，更换种子即可。
-
 impression:
   k: 4
   max_iter: 10
@@ -623,56 +281,25 @@ impression:
   seed: 42
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 12. 动态特征权重（Dynamic Feature Weights）
+# 12. 动态特征权重 — 按特征自身统计量（方差/范围/峰度）动态调整 multiplier
+#     multiplier 范围 [min_multiplier, max_multiplier]
+#     per_feature: 结构性先验（bg_*/subject_prior）默认关闭，其余开启
 # ═════════════════════════════════════════════════════════════════════════════
-#
-# 根据每张特征图自身的统计量（方差、对比度范围、峰度）动态调整融合权重。
-# 核心思想：空间变化强的特征自动提高权重，接近常量的特征自动降低权重。
-#
-# 公式: dynamic_weight = base_weight × multiplier
-#       如果 base_weight == 0，dynamic_weight 仍为 0
-#
-# enabled: 是否启用动态权重。false 时行为与旧版完全一致。
-#
-# min_multiplier / max_multiplier: multiplier 的下限/上限。
-#   信息量低的特征最多降到原权重的 min_multiplier 倍。
-#   信息量高的特征最多升到原权重的 max_multiplier 倍。
-#
-# variance_ref / range_ref / peakiness_ref: 三项统计量的参考值（经验值）。
-#   得分 = clamp(stat / ref, 0, 1)，用于归一化到 [0,1]。
-#
-# eps: 防止除零的小常数（用于峰度计算中的 mean 分母）。
-#
-# stat_mix: 三项统计量在显著度分数中的混合权重。
-#
-# percentile: variance 计算前对特征图做 percentile clip 的上下界。
-#   默认 p2~p98，剔除极端离群值后计算方差。
-#
-# per_feature: 各特征是否允许动态权重。
-#   background_mask_morph / background_fg_confidence / subject_prior
-#   默认 disabled，因为它们属于结构性先验，不应随图像统计量大幅变化。
-#   DCT / LAB Grad / Spectral / Global/Local Lab 残差默认 enabled。
-
 dynamic_weights:
   enabled: true
-
   min_multiplier: 0.35
   max_multiplier: 1.85
-
   variance_ref: 0.05
   range_ref: 0.65
   peakiness_ref: 4.0
   eps: 1.0e-6
-
   stat_mix:
     variance: 0.55
     range: 0.25
     peakiness: 0.20
-
   percentile:
     low: 2.0
     high: 98.0
-
   per_feature:
     dct:
       enabled: true
