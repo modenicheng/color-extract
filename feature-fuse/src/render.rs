@@ -82,6 +82,7 @@ pub fn make_contact_sheet_full(
     extra_rgb: &[(&str, &[[f64; 3]])],
     impression_swatch: Option<[f64; 3]>,
     weighted_swatch: Option<[f64; 3]>,
+    region_swatch: Option<[f64; 3]>,
     w: u32,
     h: u32,
     layout: &ContactSheetParams,
@@ -149,6 +150,10 @@ pub fn make_contact_sheet_full(
         if let Some(color) = weighted_swatch {
             thumbs.push(make_swatch_thumb(color, cell_w, cell_h));
             labels.push("Pred Color".to_string());
+        }
+        if let Some(color) = region_swatch {
+            thumbs.push(make_swatch_thumb(color, cell_w, cell_h));
+            labels.push("Region Color".to_string());
         }
         // 行尾补齐到 cols 列
         pad_to_align(&mut thumbs, &mut labels, cols, &empty_thumb);
@@ -269,6 +274,11 @@ fn shorten_feature_name(name: &str) -> String {
         "foreground_protect" => "FG Prot",
         "bg_mask_after_protect" => "BG Post",
         "fg_confidence" => "FG Conf",
+        "segment_region_id" => "Seg ID",
+        "segment_boundary" => "Seg Bound",
+        "segment_bg_probability" => "Seg BG",
+        "segment_saliency" => "Seg Sal",
+        "segment_subject_confidence" => "Seg Subj",
         other => other,
     }
     .to_string()
@@ -286,6 +296,7 @@ fn fuse_display_name(name: &str) -> String {
         "fused_softmul_filtered" => "Filt Mult",
         "fused_hybrid_filtered" => "Filt Hybrid",
         "Imp Color" => "Imp Color",
+        "Region Color" => "Region Color",
         other => other,
     }
     .to_string()

@@ -3,6 +3,7 @@
 // =============================================================================
 
 use anyhow::{Context, Result};
+use color_segment::SegmentParams;
 use serde::Deserialize;
 use std::path::Path;
 
@@ -32,6 +33,8 @@ pub struct Params {
     pub saturation: SaturationParams,
     #[serde(default)]
     pub direct_blend: DirectBlendParams,
+    #[serde(default)]
+    pub segment_fusion: SegmentFusionParams,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -213,6 +216,114 @@ pub struct DynamicWeightsConfig {
     /// 各特征动态权重开关
     #[serde(default)]
     pub per_feature: DynamicWeightsPerFeature,
+}
+
+// =============================================================================
+// Segment-aware fusion 参数
+// =============================================================================
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct SegmentFusionParams {
+    /// 是否启用 color-segment 区域先验。false 时保持旧行为。
+    pub enabled: bool,
+    /// 背景/主体冲突时的偏置: "balanced" / "subject" / "background"。
+    pub background_bias: String,
+    /// 是否输出分割诊断图与 JSON。
+    pub diagnostics: bool,
+    /// color-segment 的原始参数；集成路径不使用 preprocess_max_dim 做二次缩放。
+    pub segment: SegmentParams,
+    /// 区域背景、主体、显著度和主色打分参数。
+    pub region_scoring: RegionScoringParams,
+    /// 区域统计如何参与动态权重。
+    pub dynamic_weights: RegionDynamicWeightsParams,
+}
+
+impl Default for SegmentFusionParams {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            background_bias: "balanced".to_string(),
+            diagnostics: true,
+            segment: SegmentParams::default(),
+            region_scoring: RegionScoringParams::default(),
+            dynamic_weights: RegionDynamicWeightsParams::default(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct RegionScoringParams {
+    pub border_band: u32,
+    pub saliency_dct_weight: f64,
+    pub saliency_lab_grad_weight: f64,
+    pub saliency_spectral_weight: f64,
+    pub saliency_local_light_weight: f64,
+    pub saliency_local_sat_weight: f64,
+    pub bg_border_weight: f64,
+    pub bg_color_weight: f64,
+    pub bg_low_saliency_weight: f64,
+    pub bg_low_center_weight: f64,
+    pub bg_low_edge_weight: f64,
+    pub subject_center_weight: f64,
+    pub subject_saliency_weight: f64,
+    pub subject_edge_weight: f64,
+    pub subject_protect_strength: f64,
+    pub background_correction_strength: f64,
+    pub area_power: f64,
+    pub color_stability_weight: f64,
+    pub region_color_top_k: usize,
+}
+
+impl Default for RegionScoringParams {
+    fn default() -> Self {
+        Self {
+            border_band: 8,
+            saliency_dct_weight: 0.20,
+            saliency_lab_grad_weight: 0.22,
+            saliency_spectral_weight: 0.28,
+            saliency_local_light_weight: 0.15,
+            saliency_local_sat_weight: 0.15,
+            bg_border_weight: 0.26,
+            bg_color_weight: 0.32,
+            bg_low_saliency_weight: 0.18,
+            bg_low_center_weight: 0.16,
+            bg_low_edge_weight: 0.08,
+            subject_center_weight: 0.35,
+            subject_saliency_weight: 0.45,
+            subject_edge_weight: 0.20,
+            subject_protect_strength: 0.55,
+            background_correction_strength: 0.45,
+            area_power: 0.55,
+            color_stability_weight: 0.30,
+            region_color_top_k: 3,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct RegionDynamicWeightsParams {
+    pub enabled: bool,
+    pub pixel_stat_weight: f64,
+    pub region_score_weight: f64,
+    pub separation_weight: f64,
+    pub saliency_corr_weight: f64,
+    pub bg_suppression_weight: f64,
+}
+
+impl Default for RegionDynamicWeightsParams {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            pixel_stat_weight: 0.65,
+            region_score_weight: 0.35,
+            separation_weight: 0.45,
+            saliency_corr_weight: 0.35,
+            bg_suppression_weight: 0.20,
+        }
+    }
 }
 
 impl Default for DynamicWeightsConfig {

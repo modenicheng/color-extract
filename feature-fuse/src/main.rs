@@ -12,6 +12,7 @@ mod image;
 mod params;
 mod render;
 mod residual;
+mod segment_features;
 mod spectral;
 
 use anyhow::{Context, Result};
@@ -19,12 +20,10 @@ use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
 use crate::background::{
-    compute_background_features, compute_subject_prior, BackgroundFeatureInputs,
+    BackgroundFeatureInputs, compute_background_features, compute_subject_prior,
 };
 use crate::dct::compute_dct_complexity;
-use crate::dynamic_weights::{
-    compute_dynamic_weights, diagnostics_to_json, diagnostics_to_table,
-};
+use crate::dynamic_weights::{compute_dynamic_weights, diagnostics_to_json, diagnostics_to_table};
 use crate::fusion::{
     apply_filter, composite_with_hybrid, composite_with_hybrid_direct, hybrid_fusion,
     kmeans_impression_color, kmeans_weighted_color, percentile_normalize,
@@ -32,12 +31,14 @@ use crate::fusion::{
 };
 use crate::gradient::compute_lab_gradient;
 use crate::image::load_image;
-use crate::params::{load_params, validate_filter, Params};
+use crate::params::{Params, load_params, validate_filter};
 use crate::residual::{
     compute_global_lab_a_residual, compute_global_lab_b_residual, compute_global_light_residual,
-    compute_global_sat_residual,
-    compute_local_lab_a_residual, compute_local_lab_b_residual, compute_local_light_residual,
-    compute_local_sat_residual,
+    compute_global_sat_residual, compute_local_lab_a_residual, compute_local_lab_b_residual,
+    compute_local_light_residual, compute_local_sat_residual,
+};
+use crate::segment_features::{
+    SegmentFeatureResult, apply_segment_foreground_prior, compute_segment_features,
 };
 use crate::spectral::compute_spectral_residual;
 
@@ -105,7 +106,7 @@ fn main() -> Result<()> {
     println!("Found {} image(s)", image_paths.len());
 
     // ── 多图片并行处理 ──
-    let results: Vec<Result<(String, String)>> = image_paths
+    let results: Vec<Result<(String, String, String)>> = image_paths
         .par_iter()
         .map(|path| process_one_image(path, &params, max_dim, &out_base))
         .collect();
@@ -116,9 +117,13 @@ fn main() -> Result<()> {
     let mut entries: Vec<html::ImageEntry> = Vec::new();
     for r in results {
         match r {
-            Ok((stem, ic_hex)) => {
+            Ok((stem, ic_hex, rc_hex)) => {
                 println!("  ✓ {stem}");
-                entries.push(html::ImageEntry { stem, ic_hex });
+                entries.push(html::ImageEntry {
+                    stem,
+                    ic_hex,
+                    rc_hex,
+                });
                 success += 1;
             }
             Err(e) => {
@@ -154,7 +159,7 @@ fn process_one_image(
     params: &Params,
     max_dim: u32,
     out_base: &Path,
-) -> Result<(String, String)> {
+) -> Result<(String, String, String)> {
     // ── 加载图片 ──
     let data = load_image(path, max_dim)?;
     let stem = data.stem.clone();
@@ -283,8 +288,7 @@ fn process_one_image(
     save_gray_png(&loc_sat_norm, w, h, &out_dir.join("local_sat_residual.png"))?;
     let t_ls = t0.elapsed();
 
-    // ── (8+9) Background features (三阶段管线: 色域切分 + BFS + 软 mask) ──
-    let t0 = std::time::Instant::now();
+    // ── 构建背景与区域先验共用的局部色度保护代理 ──
     let local_lab_ab: Vec<f64> = loc_a_norm
         .iter()
         .zip(loc_b_norm.iter())
@@ -297,6 +301,66 @@ fn process_one_image(
         local_light: &loc_l_norm,
         local_sat: &local_lab_ab,
     };
+
+    // ── (8) Subject Prior（提前计算，供 segment-aware 区域统计复用） ──
+    let t0 = std::time::Instant::now();
+    let sp_raw = compute_subject_prior(w, h, &params.subject_prior);
+    let sp_norm = percentile_normalize(&sp_raw, p_low, p_high);
+    save_gray_png(&sp_norm, w, h, &out_dir.join("subject_prior.png"))?;
+    let t_sp = t0.elapsed();
+
+    // ── (9) Segment-aware region priors ──
+    let t0 = std::time::Instant::now();
+    let segment_result: Option<SegmentFeatureResult> = if params.segment_fusion.enabled {
+        let seg = compute_segment_features(
+            &data.rgb,
+            &data.lab_l,
+            &data.lab_a,
+            &data.lab_b,
+            w,
+            h,
+            &bg_feature_inputs,
+            &sp_norm,
+            &params.segment_fusion,
+        )?;
+        if params.segment_fusion.diagnostics {
+            save_gray_png(
+                &seg.region_id_map,
+                w,
+                h,
+                &out_dir.join("segment_region_id.png"),
+            )?;
+            save_gray_png(
+                &seg.boundary_map,
+                w,
+                h,
+                &out_dir.join("segment_boundary.png"),
+            )?;
+            save_gray_png(
+                &seg.bg_probability,
+                w,
+                h,
+                &out_dir.join("segment_bg_probability.png"),
+            )?;
+            save_gray_png(&seg.saliency, w, h, &out_dir.join("segment_saliency.png"))?;
+            save_gray_png(
+                &seg.subject_confidence,
+                w,
+                h,
+                &out_dir.join("segment_subject_confidence.png"),
+            )?;
+            let json = serde_json::to_string_pretty(&seg.diagnostics(w, h))
+                .context("serialize segment diagnostics")?;
+            std::fs::write(out_dir.join("segment_diagnostics.json"), json)
+                .context("write segment_diagnostics.json")?;
+        }
+        Some(seg)
+    } else {
+        None
+    };
+    let t_seg = t0.elapsed();
+
+    let t0 = std::time::Instant::now();
     let bg_result = compute_background_features(
         &data.lab_l,
         &data.lab_a,
@@ -306,8 +370,25 @@ fn process_one_image(
         &bg_feature_inputs,
         &params.background,
     );
-    let bg_mask_raw = bg_result.bg_mask_morph;
-    let bg_fg_raw = bg_result.fg_confidence;
+    let (bg_mask_raw, bg_fg_raw) = if let Some(ref seg) = segment_result {
+        (
+            apply_segment_foreground_prior(
+                &bg_result.bg_mask_morph,
+                seg,
+                &params.segment_fusion.region_scoring,
+            ),
+            apply_segment_foreground_prior(
+                &bg_result.fg_confidence,
+                seg,
+                &params.segment_fusion.region_scoring,
+            ),
+        )
+    } else {
+        (
+            bg_result.bg_mask_morph.clone(),
+            bg_result.fg_confidence.clone(),
+        )
+    };
     let bg_mask_norm = percentile_normalize_unit_feature(&bg_mask_raw, p_low, p_high);
     let bg_fg_norm = percentile_normalize_unit_feature(&bg_fg_raw, p_low, p_high);
     save_gray_png(
@@ -360,13 +441,6 @@ fn process_one_image(
     )?;
     let t_bg = t0.elapsed();
 
-    // ── (10) Subject Prior ──
-    let t0 = std::time::Instant::now();
-    let sp_raw = compute_subject_prior(w, h, &params.subject_prior);
-    let sp_norm = percentile_normalize(&sp_raw, p_low, p_high);
-    save_gray_png(&sp_norm, w, h, &out_dir.join("subject_prior.png"))?;
-    let t_sp = t0.elapsed();
-
     // ── (11a) Absolute Light (L* raw channel) ──
     let t0 = std::time::Instant::now();
     let abs_l_norm = percentile_normalize(&data.lab_l, p_low, p_high);
@@ -394,7 +468,7 @@ fn process_one_image(
     let t_as = t0.elapsed();
 
     println!(
-        "    DCT={:.1}s LAB={:.1}s SR={:.1}s GL={:.1}s GA={:.1}s GB={:.1}s GS={:.1}s LL={:.1}s LA={:.1}s LB={:.1}s LS={:.1}s BG={:.1}s SP={:.1}s AL={:.1}s AA={:.1}s AB={:.1}s AS={:.1}s — fusion …",
+        "    DCT={:.1}s LAB={:.1}s SR={:.1}s GL={:.1}s GA={:.1}s GB={:.1}s GS={:.1}s LL={:.1}s LA={:.1}s LB={:.1}s LS={:.1}s SEG={:.1}s BG={:.1}s SP={:.1}s AL={:.1}s AA={:.1}s AB={:.1}s AS={:.1}s — fusion …",
         t_dct.as_secs_f64(),
         t_lab.as_secs_f64(),
         t_sr.as_secs_f64(),
@@ -406,6 +480,7 @@ fn process_one_image(
         t_la.as_secs_f64(),
         t_lb.as_secs_f64(),
         t_ls.as_secs_f64(),
+        t_seg.as_secs_f64(),
         t_bg.as_secs_f64(),
         t_sp.as_secs_f64(),
         t_al.as_secs_f64(),
@@ -462,11 +537,14 @@ fn process_one_image(
 
     // ── 计算动态权重（若 dynamic_weights.enabled == true）──
     let (add_w, mul_w) = if params.dynamic_weights.enabled {
+        let segment_weight_ctx = segment_result.as_ref().map(|seg| seg.weight_context());
         let result = compute_dynamic_weights(
             &features,
             &base_add,
             &base_mul,
             &params.dynamic_weights,
+            segment_weight_ctx.as_ref(),
+            Some(&params.segment_fusion.dynamic_weights),
         );
         // 输出诊断表格到控制台
         let table = diagnostics_to_table(&result.diagnostics);
@@ -564,9 +642,7 @@ fn process_one_image(
         (weighted_color[1].clamp(0.0, 1.0) * 255.0) as u8,
         (weighted_color[2].clamp(0.0, 1.0) * 255.0) as u8,
     );
-    println!(
-        "    weighted cluster: {wc_hex} (score={wc_score:.0})"
-    );
+    println!("    weighted cluster: {wc_hex} (score={wc_score:.0})");
 
     // ── 印象色：k-means++ 聚类，取最大簇 ──
     let impression_color = kmeans_impression_color(
@@ -585,6 +661,24 @@ fn process_one_image(
         (impression_color[2].clamp(0.0, 1.0) * 255.0) as u8,
     );
     println!("    impression color: {ic_hex} (k-means cluster, k={k}, iter={max_iter})");
+
+    // ── 区域感知主色：按 segment region 得分聚合 ──
+    let (region_color, region_score) = if let Some(ref seg) = segment_result {
+        (seg.region_color.rgb, seg.region_color.score)
+    } else {
+        (weighted_color, 0.0)
+    };
+    let rc_hex = format!(
+        "#{:02x}{:02x}{:02x}",
+        (region_color[0].clamp(0.0, 1.0) * 255.0) as u8,
+        (region_color[1].clamp(0.0, 1.0) * 255.0) as u8,
+        (region_color[2].clamp(0.0, 1.0) * 255.0) as u8,
+    );
+    if segment_result.is_some() {
+        println!("    region color: {rc_hex} (segment-aware score={region_score:.4})");
+    } else {
+        println!("    region color: {rc_hex} (segment fusion disabled; fallback=weighted)");
+    }
 
     // ── Contact Sheet ──
     let mut feat_slices: Vec<(&str, &[f64])> = feature_names
@@ -609,6 +703,15 @@ fn process_one_image(
         ),
         ("fg_confidence", &bg_result.diagnostics.fg_confidence),
     ]);
+    if let Some(ref seg) = segment_result {
+        feat_slices.extend_from_slice(&[
+            ("segment_region_id", &seg.region_id_map),
+            ("segment_boundary", &seg.boundary_map),
+            ("segment_bg_probability", &seg.bg_probability),
+            ("segment_saliency", &seg.saliency),
+            ("segment_subject_confidence", &seg.subject_confidence),
+        ]);
+    }
     let fused_slices: [(&str, &[f64]); 6] = [
         ("fused_add", &fused_add),
         ("fused_softmul", &fused_mul),
@@ -628,10 +731,14 @@ fn process_one_image(
         &fused_slices,
         &[
             ("fused_original_hybrid", composite_rgb.as_slice()),
-            ("fused_original_hybrid_nothreshold", composite_nothresh.as_slice()),
+            (
+                "fused_original_hybrid_nothreshold",
+                composite_nothresh.as_slice(),
+            ),
         ],
         Some(impression_color),
         Some(weighted_color),
+        Some(region_color),
         w,
         h,
         &params.contact_sheet,
@@ -641,5 +748,5 @@ fn process_one_image(
 
     println!("    ✓ {stem} — all outputs in {}/", out_dir.display());
 
-    Ok((stem, ic_hex))
+    Ok((stem, ic_hex, rc_hex))
 }

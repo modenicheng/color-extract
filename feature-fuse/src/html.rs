@@ -9,6 +9,7 @@ use std::io::Write;
 pub struct ImageEntry {
     pub stem: String,
     pub ic_hex: String,
+    pub rc_hex: String,
 }
 
 /// 生成 HTML 总览页：每行展示 resized 原图、Filt Hybr、印象色和 contact sheet。
@@ -138,7 +139,7 @@ fn write_body(html: &mut String, entries: &[ImageEntry]) {
     html.push_str("<header>\n");
     html.push_str("<h1>Feature-Fuse Overview</h1>\n");
     html.push_str(&format!(
-        "<div class=\"stats\">{} images - Resized / Filt Hybrid / Impression Color / Contact Sheet</div>\n",
+        "<div class=\"stats\">{} images - Resized / Filt Hybrid / Impression Color / Region Color / Contact Sheet</div>\n",
         entries.len()
     ));
     html.push_str("</header>\n");
@@ -150,6 +151,7 @@ fn write_body(html: &mut String, entries: &[ImageEntry]) {
         <th class=\"img-col\">Resized</th>\
         <th class=\"img-col\">Filt Hybr</th>\
         <th>Impression</th>\
+        <th>Region</th>\
         <th>Sheet</th>\
         </tr></thead>\n",
     );
@@ -175,6 +177,11 @@ fn write_body(html: &mut String, entries: &[ImageEntry]) {
             "<td><div class=\"ic-cell\"><div class=\"ic-swatch\" style=\"background:{}\"></div><span class=\"ic-hex\">{}</span></div></td>\n",
             escape_attr(&e.ic_hex),
             escape_html(&e.ic_hex)
+        ));
+        html.push_str(&format!(
+            "<td><div class=\"ic-cell\"><div class=\"ic-swatch\" style=\"background:{}\"></div><span class=\"ic-hex\">{}</span></div></td>\n",
+            escape_attr(&e.rc_hex),
+            escape_html(&e.rc_hex)
         ));
         html.push_str(&format!(
             "<td><a href=\"contact_sheet_{}.png\">open</a></td>\n",

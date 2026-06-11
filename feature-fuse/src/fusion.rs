@@ -174,7 +174,10 @@ pub fn composite_with_hybrid_direct(
         let min = hybrid.iter().cloned().fold(f64::MAX, f64::min);
         let max = hybrid.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let range = (max - min).max(1e-12);
-        hybrid.iter().map(|&v| ((v - min) / range).clamp(0.0, 1.0)).collect()
+        hybrid
+            .iter()
+            .map(|&v| ((v - min) / range).clamp(0.0, 1.0))
+            .collect()
     } else {
         hybrid.iter().map(|&v| v.clamp(0.0, 1.0)).collect()
     };
@@ -408,7 +411,10 @@ pub fn kmeans_weighted_color(
         let min = hybrid.iter().cloned().fold(f64::MAX, f64::min);
         let max = hybrid.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let range = (max - min).max(1e-12);
-        hybrid.iter().map(|&v| ((v - min) / range).clamp(0.0, 1.0)).collect()
+        hybrid
+            .iter()
+            .map(|&v| ((v - min) / range).clamp(0.0, 1.0))
+            .collect()
     } else {
         hybrid.iter().map(|&v| v.clamp(0.0, 1.0)).collect()
     };

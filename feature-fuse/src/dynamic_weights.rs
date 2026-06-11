@@ -12,7 +12,8 @@
 //
 // =============================================================================
 
-use crate::params::{DynamicWeightsConfig, DynamicWeightsPerFeature};
+use crate::params::{DynamicWeightsConfig, DynamicWeightsPerFeature, RegionDynamicWeightsParams};
+use crate::segment_features::{RegionWeightContext, region_dynamic_score_for_feature};
 
 // =============================================================================
 // 诊断数据结构
@@ -47,6 +48,12 @@ pub struct FeatureDiagnostics {
     pub peakiness_score: f64,
     /// 综合显著度分数
     pub stat_score: f64,
+    /// 像素统计分数（方差/范围/峰度）
+    pub pixel_stat_score: f64,
+    /// 区域一致性分数（区域分离度/显著相关/背景抑制）
+    pub region_score: f64,
+    /// 最终用于 multiplier 的分数
+    pub final_stat_score: f64,
     /// multiplier (应用于 base weight)
     pub multiplier: f64,
     /// 动态加法权重 = base_add × multiplier
@@ -208,6 +215,10 @@ fn compute_multiplier(
     )
 }
 
+fn multiplier_from_score(stat_score: f64, cfg: &DynamicWeightsConfig) -> f64 {
+    cfg.min_multiplier + (cfg.max_multiplier - cfg.min_multiplier) * stat_score.clamp(0.0, 1.0)
+}
+
 // =============================================================================
 // 主入口：计算动态权重
 // =============================================================================
@@ -273,6 +284,8 @@ pub fn compute_dynamic_weights(
     base_add: &[f64],
     base_mul: &[f64],
     cfg: &DynamicWeightsConfig,
+    region_ctx: Option<&RegionWeightContext<'_>>,
+    region_cfg: Option<&RegionDynamicWeightsParams>,
 ) -> DynamicWeightsResult {
     assert_eq!(features.len(), 18);
     assert_eq!(base_add.len(), 18);
@@ -307,6 +320,9 @@ pub fn compute_dynamic_weights(
                 range_score: 0.0,
                 peakiness_score: 0.0,
                 stat_score: 0.0,
+                pixel_stat_score: 0.0,
+                region_score: 0.0,
+                final_stat_score: 0.0,
                 multiplier: 0.0,
                 dynamic_add_weight: 0.0,
                 dynamic_mul_weight: 0.0,
@@ -332,12 +348,48 @@ pub fn compute_dynamic_weights(
         let mean = compute_mean(feat);
 
         // 计算 multiplier（如果该特征禁用了动态权重，则 multiplier = 1.0）
-        let (variance_score, range_score, peakiness_score, stat_score, multiplier) =
+        let (variance_score, range_score, peakiness_score, pixel_stat_score, multiplier) =
             if !enabled_flags[i] {
                 (0.0, 0.0, 0.0, 0.0, 1.0)
             } else {
                 compute_multiplier(variance, range, peakiness, cfg)
             };
+
+        let region_score = if enabled_flags[i] {
+            match (region_ctx, region_cfg) {
+                (Some(ctx), Some(rcfg)) if rcfg.enabled => {
+                    region_dynamic_score_for_feature(feat, ctx, rcfg)
+                }
+                _ => 0.0,
+            }
+        } else {
+            0.0
+        };
+
+        let final_stat_score = if enabled_flags[i] {
+            match region_cfg {
+                Some(rcfg) if rcfg.enabled && region_ctx.is_some() => {
+                    let total = rcfg.pixel_stat_weight + rcfg.region_score_weight;
+                    if total <= 1e-12 {
+                        pixel_stat_score
+                    } else {
+                        ((pixel_stat_score * rcfg.pixel_stat_weight
+                            + region_score * rcfg.region_score_weight)
+                            / total)
+                            .clamp(0.0, 1.0)
+                    }
+                }
+                _ => pixel_stat_score,
+            }
+        } else {
+            0.0
+        };
+
+        let multiplier = if enabled_flags[i] {
+            multiplier_from_score(final_stat_score, cfg)
+        } else {
+            multiplier
+        };
 
         // 计算动态权重：base × multiplier（base==0 的情况已经在前面处理）
         let dynamic_add = ba * multiplier;
@@ -356,7 +408,10 @@ pub fn compute_dynamic_weights(
             variance_score,
             range_score,
             peakiness_score,
-            stat_score,
+            stat_score: final_stat_score,
+            pixel_stat_score,
+            region_score,
+            final_stat_score,
             multiplier,
             dynamic_add_weight: dynamic_add,
             dynamic_mul_weight: dynamic_mul,
@@ -388,13 +443,15 @@ pub fn diagnostics_to_table(diagnostics: &[FeatureDiagnostics]) -> String {
 
     // 表头
     lines.push(format!(
-        "{:<28} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
+        "{:<28} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
         "Feature",
         "BaseAdd",
         "BaseMul",
         "Var",
         "Range",
         "Peak",
+        "Pix",
+        "Reg",
         "Score",
         "Mult",
         "DynAdd",
@@ -402,18 +459,20 @@ pub fn diagnostics_to_table(diagnostics: &[FeatureDiagnostics]) -> String {
     ));
 
     // 分隔线
-    lines.push("-".repeat(28 + 7 * 9 + 9));
+    lines.push("-".repeat(28 + 7 * 11 + 11));
 
     // 数据行
     for d in diagnostics {
         lines.push(format!(
-            "{:<28} {:7.4} {:7.4} {:7.4} {:7.4} {:7.2} {:7.4} {:7.4} {:7.4} {:7.4}",
+            "{:<28} {:7.4} {:7.4} {:7.4} {:7.4} {:7.2} {:7.4} {:7.4} {:7.4} {:7.4} {:7.4} {:7.4}",
             d.feature,
             d.base_add_weight,
             d.base_mul_weight,
             d.variance,
             d.range,
             d.peakiness,
+            d.pixel_stat_score,
+            d.region_score,
             d.stat_score,
             d.multiplier,
             d.dynamic_add_weight,

@@ -324,6 +324,59 @@ subject_prior:
   radius_y: 0.0
 
 # ═════════════════════════════════════════════════════════════════════════════
+# 4d. Segment-aware Region Priors（color-segment 区域先验）
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# 复用 color-segment 的色块分割结果，为背景修正、动态权重和主色提取提供区域级证据。
+# 集成路径使用 feature-fuse 已 resize 后的图像，不再按 segment.preprocess_max_dim 二次缩放。
+
+segment_fusion:
+  enabled: true
+  background_bias: balanced   # balanced / subject / background
+  diagnostics: true
+  segment:
+    min_region_area: 70
+    min_cluster_area_ratio: 0.002
+    edge_threshold: 0.01
+    edge_split_strength: 0.25
+    edge_gamma: 0.8
+    edge_merge_strength: 0.12
+    color_merge_distance: 8.0
+    small_region_color_distance: 20.0
+    merge_small_regions: true
+    morph_open_radius: 0
+    morph_close_radius: 1
+    color_weight: 1.0
+    edge_weight: 2.5
+  region_scoring:
+    border_band: 8
+    saliency_dct_weight: 0.20
+    saliency_lab_grad_weight: 0.22
+    saliency_spectral_weight: 0.28
+    saliency_local_light_weight: 0.15
+    saliency_local_sat_weight: 0.15
+    bg_border_weight: 0.26
+    bg_color_weight: 0.32
+    bg_low_saliency_weight: 0.18
+    bg_low_center_weight: 0.16
+    bg_low_edge_weight: 0.08
+    subject_center_weight: 0.35
+    subject_saliency_weight: 0.45
+    subject_edge_weight: 0.20
+    subject_protect_strength: 0.55
+    background_correction_strength: 0.45
+    area_power: 0.55
+    color_stability_weight: 0.30
+    region_color_top_k: 3
+  dynamic_weights:
+    enabled: true
+    pixel_stat_weight: 0.65
+    region_score_weight: 0.35
+    separation_weight: 0.45
+    saliency_corr_weight: 0.35
+    bg_suppression_weight: 0.20
+
+# ═════════════════════════════════════════════════════════════════════════════
 # 5. 特征权重
 # ═════════════════════════════════════════════════════════════════════════════
 #
