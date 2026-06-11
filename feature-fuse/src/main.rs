@@ -170,7 +170,7 @@ fn process_one_image(
     let out_dir = out_base.join(&stem);
     std::fs::create_dir_all(&out_dir)?;
 
-    println!("  {} ({}×{}) — 18 features …", stem, w, h);
+    println!("  {} ({}×{}) — 19 features …", stem, w, h);
 
     // ── 保存 resize 后的原图 ──
     save_rgb_png(&data.rgb, w, h, &out_dir.join("resized.png"))?;
@@ -349,6 +349,12 @@ fn process_one_image(
                 h,
                 &out_dir.join("segment_subject_confidence.png"),
             )?;
+            save_gray_png(
+                &seg.foreground,
+                w,
+                h,
+                &out_dir.join("segment_foreground.png"),
+            )?;
             let json = serde_json::to_string_pretty(&seg.diagnostics(w, h))
                 .context("serialize segment diagnostics")?;
             std::fs::write(out_dir.join("segment_diagnostics.json"), json)
@@ -467,6 +473,12 @@ fn process_one_image(
     save_gray_png(&abs_sat_norm, w, h, &out_dir.join("abs_sat.png"))?;
     let t_as = t0.elapsed();
 
+    // ── (11e) Segment Foreground (color-segment 派生的第 19D 前景概率) ──
+    let segment_fg_norm: Vec<f64> = segment_result
+        .as_ref()
+        .map(|seg| seg.foreground.iter().map(|&v| v.clamp(0.0, 1.0)).collect())
+        .unwrap_or_else(|| vec![0.0; (w * h) as usize]);
+
     println!(
         "    DCT={:.1}s LAB={:.1}s SR={:.1}s GL={:.1}s GA={:.1}s GB={:.1}s GS={:.1}s LL={:.1}s LA={:.1}s LB={:.1}s LS={:.1}s SEG={:.1}s BG={:.1}s SP={:.1}s AL={:.1}s AA={:.1}s AB={:.1}s AS={:.1}s — fusion …",
         t_dct.as_secs_f64(),
@@ -490,7 +502,7 @@ fn process_one_image(
     );
 
     // ── 归一化后的所有特征 ──
-    let features: [&[f64]; 18] = [
+    let features: [&[f64]; 19] = [
         &dct_norm,
         &lab_grad_norm,
         &sr_norm,
@@ -509,8 +521,9 @@ fn process_one_image(
         &abs_a_norm,
         &abs_b_norm,
         &abs_sat_norm,
+        &segment_fg_norm,
     ];
-    let feature_names: [&str; 18] = [
+    let feature_names: [&str; 19] = [
         "dct_complexity",
         "lab_gradient",
         "spectral_residual",
@@ -529,6 +542,7 @@ fn process_one_image(
         "abs_lab_a",
         "abs_lab_b",
         "abs_sat",
+        "segment_foreground",
     ];
 
     // ── 从 YAML 提取 base weight 数组 ──
@@ -627,14 +641,14 @@ fn process_one_image(
         &out_dir.join("fused_original_hybrid_nothreshold.png"),
     )?;
 
-    // ── 加权聚类色：对原图做加权 k-means，Hybrid 为权重 ──
+    // ── 加权聚类色：对原图做加权 k-means，FiltHybrid 为权重 ──
     let (weighted_color, wc_score) = kmeans_weighted_color(
         &data.rgb,
-        &fused_hybrid,
+        &fused_hyb_filt,
         w as usize,
         h as usize,
         &params.impression,
-        params.direct_blend.normalize_before,
+        false,
     );
     let wc_hex = format!(
         "#{:02x}{:02x}{:02x}",

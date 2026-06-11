@@ -268,6 +268,7 @@ fn shorten_feature_name(name: &str) -> String {
         "abs_lab_a" => "Abs a*",
         "abs_lab_b" => "Abs b*",
         "abs_sat" => "Abs Sat",
+        "segment_foreground" => "Seg FG",
         "bg_candidate" => "BG Cand",
         "bg_barrier" => "BG Barr",
         "bg_mask_before_protect" => "BG Pre",

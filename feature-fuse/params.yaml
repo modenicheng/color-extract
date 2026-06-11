@@ -130,7 +130,7 @@ segment_fusion:
   segment:
     min_region_area: 70
     min_cluster_area_ratio: 0.002
-    edge_threshold: 0.01
+    edge_threshold: 0.005
     edge_split_strength: 0.25
     edge_gamma: 0.8
     edge_merge_strength: 0.12
@@ -157,10 +157,19 @@ segment_fusion:
     subject_saliency_weight: 0.45
     subject_edge_weight: 0.20
     subject_protect_strength: 0.55
-    background_correction_strength: 0.45
+    # 设为 0 时 segment 不直接改写传统背景图，而是通过第 19D segment_foreground 参与融合。
+    background_correction_strength: 0.00
     area_power: 0.55
     color_stability_weight: 0.30
-    region_color_top_k: 3
+    # 大面积、低方差、低饱和区域更像平铺背景，会被压低 region color 排名。
+    bg_flat_penalty_strength: 0.55
+    bg_flat_area_min_ratio: 0.08
+    bg_flat_area_full_ratio: 0.35
+    bg_flat_sat_threshold: 0.28
+    # 大面积但高饱和、色相接近红/绿的色块更可能是有效主色，给轻微奖励。
+    vivid_rg_bonus_strength: 0.12
+    vivid_rg_sat_threshold: 0.45
+    vivid_rg_hue_width: 38.0
   dynamic_weights:
     enabled: true
     pixel_stat_weight: 0.65
@@ -170,8 +179,9 @@ segment_fusion:
     bg_suppression_weight: 0.20
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 5. 特征权重 — 18 维，两套独立（add 加法 / mul 软乘法），自动归一化
+# 5. 特征权重 — 19 维，两套独立（add 加法 / mul 软乘法），自动归一化
 #    权重设为 0 → 该特征不参与融合
+#    segment_foreground: color-segment 派生前景概率，1=区域更像主体/非背景
 # ═════════════════════════════════════════════════════════════════════════════
 weights_add:
   dct: 0.1
@@ -182,16 +192,17 @@ weights_add:
   global_lab_b: 0.08
   global_sat: 0.01
   local_light: 0.00
-  local_lab_a: 0.00
-  local_lab_b: 0.00
+  local_lab_a: 0.03
+  local_lab_b: 0.02
   local_sat: 0.01
-  background_mask_morph: 0.25
-  background_fg_confidence: 0.65
+  background_mask_morph: 0.00
+  background_fg_confidence: 0.00
   subject_prior: 0.00
   abs_light: 0.00
   abs_lab_a: 0.035
   abs_lab_b: 0.03
-  abs_sat: 0.06
+  abs_sat: 0.10
+  segment_foreground: 0.50
 
 weights_mul:
   dct: 0.01
@@ -205,13 +216,14 @@ weights_mul:
   local_lab_a: 0.015
   local_lab_b: 0.01
   local_sat: 0.00
-  background_mask_morph: 0.08
-  background_fg_confidence: 0.6
+  background_mask_morph: 0.00
+  background_fg_confidence: 0.07
   subject_prior: 0.00
-  abs_light: 0.01
+  abs_light: 0.00
   abs_lab_a: 0.06
   abs_lab_b: 0.02
-  abs_sat: 0.09
+  abs_sat: 0.10
+  segment_foreground: 0.70
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 6. Hybrid Fusion — hybrid = α×add + (1-α)×softmul, result = hybrid^γ
@@ -220,8 +232,8 @@ weights_mul:
 #    epsilon: 乘法 baseline，防零值归零
 # ═════════════════════════════════════════════════════════════════════════════
 fusion:
-  alpha: 0.15
-  gamma: 2.0
+  alpha: 0.10
+  gamma: 2.5
   epsilon: 0.10
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -229,15 +241,21 @@ fusion:
 #     normalize_before: 是否先对 hybrid 做 min-max 归一化
 # ═════════════════════════════════════════════════════════════════════════════
 direct_blend:
-  normalize_before: false
+  normalize_before: true
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 7. 最终过滤（threshold / quantile 互斥）
 # ═════════════════════════════════════════════════════════════════════════════
 filter:
   method: threshold
-  threshold: 0.18
+  threshold: 0.10
   normalize_before: true
+  # 阈值/分位数过滤后，只对保留下来的正值区域重新归一化；0 背景保持为 0。
+  post_normalize: true
+  # post_normalize 输出下限：0 表示拉到 [0,1]，0.2 表示保留区域拉到 [0.2,1]。
+  post_normalize_min: 0.0
+  # 归一化后的 gamma 曲线：<1 放大弱响应，>1 压低弱响应，1 不改变。
+  post_normalize_gamma: 1.5
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 8. Contact Sheet 排版（仅影响输出，不影响计算）
@@ -337,3 +355,5 @@ dynamic_weights:
       enabled: true
     abs_sat:
       enabled: true
+    segment_foreground:
+      enabled: true  # 背景相关不加动态权重

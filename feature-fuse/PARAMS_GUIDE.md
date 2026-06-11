@@ -458,7 +458,7 @@ morphology 后的软保护强度: `bg_mask *= 1 - strength * foreground_protect`
 3. 区域属性用于 3 个下游：
    - 背景修正（修正 `background_mask_morph` / `background_fg_confidence`）
    - 动态权重（特征加权取决于区域分离能力）
-   - 主色提取（从 Top-K 区域加权混合得到主导色）
+   - 主色提取（直接取 color_score 最高的 Top-1 区域作为主导色）
 
 ### 顶层参数
 
@@ -505,9 +505,13 @@ morphology 后的软保护强度: `bg_mask *= 1 - strength * foreground_protect`
 - **subject_confidence** = 3 种主体线索的加权平均
 
 这些属性用于:
-1. 修正 `background_mask_morph` / `background_fg_confidence` 两个特征
-2. 给动态权重提供区域分离度、显著度相关性、前景-背景分离度 3 个指标
-3. 计算 `region_color_score` 用于主色混合
+
+1. 生成第 19D `segment_foreground` 特征，直接进入 `weights_add` / `weights_mul` 融合
+2. 可选修正 `background_mask_morph` / `background_fg_confidence` 两个传统背景特征
+3. 给动态权重提供区域分离度、显著度相关性、前景-背景分离度 3 个指标
+4. 计算 `region_color_score`，直接选择最高分区域作为 region color
+
+`segment_foreground = (1 - bg_probability) × 0.65 + subject_confidence × 0.35`，高值表示该像素所在区域更像主体/非背景。它不做 percentile 拉伸，作为 0~1 概率先验直接参与第 19D 权重融合。
 
 #### 显著度权重（region saliency）
 
@@ -543,11 +547,29 @@ morphology 后的软保护强度: `bg_mask *= 1 - strength * foreground_protect`
 
 | 参数 | 默认 | 效果 |
 |------|------|------|
-| `background_correction_strength` | 0.45 | ↑ 区域先验更强势地覆盖原始背景管线结果。0 = 完全用原始背景管线。对 `background_mask_morph`/`bg_fg_conf` 生效 |
+| `background_correction_strength` | 0.00 | ↑ 区域先验更强势地覆盖原始背景管线结果。0 = 完全用原始背景管线，仅让 segment 通过第 19D 参与融合。对 `background_mask_morph`/`bg_fg_conf` 生效 |
 | `border_band` | 8 | ↑ 更多边缘像素参与"边框原型色"采样和 border_ratio 计算，可能混入前景像素。↓ 只用极边缘像素，样本偏少但更纯 |
 | `area_power` | 0.55 | ↑ 大面积区域在 color_score 中的权重被指数放大。1.0 → 面积与权重成正比；0.5 → 压缩面积差异 |
 | `color_stability_weight` | 0.30 | ↑ 颜色均匀的区域 color_score 更高（压制杂色块）。0 → 只看面积不看均匀度；1 → 均匀度完全支配 |
-| `region_color_top_k` | 3 | ↑ 更多区域的均值颜色参与最终主色混合。1 → 只用 color_score 最高的一个区域 |
+
+#### 平铺背景惩罚 & 鲜艳红绿奖励
+
+`region color` 的 Top-1 排名现在额外乘上两个区域色彩因子:
+
+- **背景惩罚**: 大面积 × 低方差/高稳定度 × 低饱和度。用于压制大块灰白、黑白、低饱和平铺背景。
+- **红绿奖励**: 大面积 × 高饱和度 × 色相接近红/绿。用于轻微保护大块鲜艳红色/绿色主题色。
+
+| 参数 | 默认 | 效果 |
+|------|------|------|
+| `bg_flat_penalty_strength` | 0.55 | ↑ 更强烈惩罚大面积、低方差、低饱和区域。0 = 禁用该惩罚 |
+| `bg_flat_area_min_ratio` | 0.08 | 区域面积超过该比例后开始触发平铺背景惩罚 |
+| `bg_flat_area_full_ratio` | 0.35 | 区域面积超过该比例后平铺背景惩罚满额触发 |
+| `bg_flat_sat_threshold` | 0.28 | 饱和度低于该阈值时进入低饱和惩罚，越大越容易惩罚淡色块 |
+| `vivid_rg_bonus_strength` | 0.12 | ↑ 更明显奖励大面积鲜艳红/绿色块；建议保持较小，避免红绿背景误伤 |
+| `vivid_rg_sat_threshold` | 0.45 | 饱和度高于该阈值后开始触发红绿奖励 |
+| `vivid_rg_hue_width` | 38.0 | 红/绿色相容忍宽度，单位度。越大越容易把橙红、黄绿也纳入奖励 |
+
+最终 `region color` 不做多区域加权混合，而是直接采用 `color_score` 最高的单个区域均色。
 
 ---
 
@@ -561,6 +583,7 @@ morphology 后的软保护强度: `bg_mask *= 1 - strength * foreground_protect`
 两部分加权平均后映射为 [min_multiplier, max_multiplier] 的倍增因子，**最终权重 = base_weight × multiplier**。
 
 **区域区分分由 3 个子指标组成:**
+
 - `separation` = between_group_variance / total_variance — 区域间差异 vs 区域内差异
 - `saliency_corr` = 特征值与区域显著度的 Pearson 相关系数
 - `bg_suppression` = (fg_mean − bg_mean) / 0.45 — 前景区域值是否高于背景区域
@@ -582,6 +605,7 @@ morphology 后的软保护强度: `bg_mask *= 1 - strength * foreground_protect`
 | 主体与背景颜色相近 | 增大 `color_weight`，降低 `edge_weight` |
 | 背景管线误判较多（把主体区域当背景）| 增大 `background_correction_strength` |
 | 背景管线漏判较多（背景区域被当成主体）| 减小 `background_correction_strength` |
+| 希望 segment 只作为普通特征参与 | 保持 `background_correction_strength: 0`，调 `weights_add/mul.segment_foreground` |
 | 分割过碎（太多小区域）| 增大 `min_region_area` / `color_merge_distance` |
 | 分割合并过度（大块含异色）| 减小 `color_merge_distance`，增大 `edge_split_strength` |
 | 想让区域信息更主导特征权重 | 增大 `region_score_weight`，减小 `pixel_stat_weight` |
@@ -590,7 +614,7 @@ morphology 后的软保护强度: `bg_mask *= 1 - strength * foreground_protect`
 
 ## 5. 特征权重
 
-两套独立的 18 维权重:
+两套独立的 19 维权重:
 
 - **`weights_add`**: 加法分支（加权求和）
 - **`weights_mul`**: 乘法分支（加权软乘法，各特征概率相乘）
@@ -602,30 +626,32 @@ morphology 后的软保护强度: `bg_mask *= 1 - strength * foreground_protect`
 
 | 特征 | 默认值 | 调大则更关注… |
 |------|--------|---------------|
-| `dct` | 0.22 | 纯色/平滑背景区域（高频纹理少的地方）被压制 |
-| `lab_grad` | 0.22 | 结构边缘（线条、轮廓）被高亮 |
-| `spectral` | 0.12 | 全局视觉显著区域（突兀物体）被突出 |
-| `global_light` | 0.05 | 偏离整体亮度的色块（亮/暗异常区域） |
+| `dct` | 0.10 | 纯色/平滑背景区域（高频纹理少的地方）被压制 |
+| `lab_grad` | 0.02 | 结构边缘（线条、轮廓）被高亮 |
+| `spectral` | 0.15 | 全局视觉显著区域（突兀物体）被突出 |
+| `global_light` | 0.00 | 偏离整体亮度的色块（亮/暗异常区域） |
 | `global_lab_a` | 0.09 | 偏离全局 a\* 红-绿色调的像素（暖调/冷调异常） |
-| `global_lab_b` | 0.09 | 偏离全局 b\* 黄-蓝色调的像素 |
-| `global_sat` | 0.05 | 偏离全局饱和度的像素（鲜艳/素雅异常） |
-| `local_light` | 0.06 | HSL 局部亮度细节（精细光影变化） |
-| `local_lab_a` | 0.04 | LAB a\* 局部残差（红-绿轴细节变化） |
-| `local_lab_b` | 0.04 | LAB b\* 局部残差（黄-蓝轴细节变化） |
-| `local_sat` | 0.03 | HSL 局部饱和度残差（鲜艳色块边缘） |
-| `background_mask_morph` | 0.30 | 三阶段硬 mask（1=前景/0=背景）。调大→按背景掩膜严格裁剪 |
-| `background_fg_confidence` | 0.30 | 三阶段软置信度（0~1）。调大→更依赖背景管线的主体判断 |
-| `subject_prior` | 0.10 | 离画面中心越近权重越高（构图中心偏向） |
-| `abs_light` | 0.04 | 绝对 L\* 明度通道（亮→暗直接映射） |
-| `abs_lab_a` | 0.04 | 绝对 a\* 红绿色通道（绿→红直接映射） |
-| `abs_lab_b` | 0.04 | 绝对 b\* 黄蓝色通道（蓝→黄直接映射） |
-| `abs_sat` | 0.03 | 绝对饱和度通道（鲜艳→素雅直接映射） |
+| `global_lab_b` | 0.08 | 偏离全局 b\* 黄-蓝色调的像素 |
+| `global_sat` | 0.01 | 偏离全局饱和度的像素（鲜艳/素雅异常） |
+| `local_light` | 0.00 | HSL 局部亮度细节（精细光影变化） |
+| `local_lab_a` | 0.00 | LAB a\* 局部残差（红-绿轴细节变化） |
+| `local_lab_b` | 0.00 | LAB b\* 局部残差（黄-蓝轴细节变化） |
+| `local_sat` | 0.01 | HSL 局部饱和度残差（鲜艳色块边缘） |
+| `background_mask_morph` | 0.25 | 三阶段硬 mask（1=前景/0=背景）。调大→按背景掩膜严格裁剪 |
+| `background_fg_confidence` | 0.65 | 三阶段软置信度（0~1）。调大→更依赖背景管线的主体判断 |
+| `subject_prior` | 0.00 | 离画面中心越近权重越高（构图中心偏向） |
+| `abs_light` | 0.00 | 绝对 L\* 明度通道（亮→暗直接映射） |
+| `abs_lab_a` | 0.035 | 绝对 a\* 红绿色通道（绿→红直接映射） |
+| `abs_lab_b` | 0.03 | 绝对 b\* 黄蓝色通道（蓝→黄直接映射） |
+| `abs_sat` | 0.06 | 绝对饱和度通道（鲜艳→素雅直接映射） |
+| `segment_foreground` | 0.30 | color-segment 派生前景概率。高值 = 区域更像主体/非背景 |
 
 ### 乘法分支
 
 乘法分支 = 软乘法: `score = product((ε + (1-ε)*feat_i)^w_i)`
 
 **特性:** 任一特征值接近 0 时，乘积会被"拉低"，所以乘法分支比加法更"保守"。适合用于"所有特征同时认可"的区域才高亮的场景。
+当前默认 `weights_mul.segment_foreground = 0.20`，用于让色块前景概率参与保守门控；想让 segment 只做软加分，可把它降到 0。
 
 ### 常见调参策略
 
@@ -636,6 +662,7 @@ morphology 后的软保护强度: `bg_mask *= 1 - strength * foreground_protect`
 | 想保留全局色彩印象 | 增大 global_light + global_lab_a/b |
 | 想增强局部纹理细节 | 增大 local_light + local_lab_a/b |
 | 想利用背景分割裁剪主体 | 增大 background_mask_morph + background_fg_confidence |
+| 想让色块分割参与主体判断 | 增大 `segment_foreground`；若不希望改写传统背景图，保持 `background_correction_strength: 0` |
 | 背景管线过度检测时 | 降低 bg_score_threshold / 调大 max_bg_ratio |
 | 背景管线检测不足时 | 调高 bg_score_threshold / 增大 border_band |
 | 可以某一分支全部设 0 | 等价于只用另一分支 |
@@ -665,14 +692,17 @@ result = hybrid^γ
 
 ## 6a. Direct Blend 参数
 
-无阈值过滤的 Hybrid × 原图 + 加权聚类预测色。
+无阈值过滤的 Hybrid × 原图，以及加权聚类预测色。
 
-**`direct_blend.normalize_before`** — 在乘原图或加权聚类之前是否先对 hybrid 做 [0,1] 归一化。
+**`direct_blend.normalize_before`** — 在无阈值复合图乘原图之前，是否先对 raw `fused_hybrid` 做 [0,1] 归一化。
+
+- `fused_original_hybrid_nothreshold.png` 使用未过滤的 raw `fused_hybrid`
+- `weighted cluster` 直接使用过滤后的 `fused_hybrid_filtered` 数值，不再二次归一化，因此会精确响应 `filter.post_normalize_min` / `filter.post_normalize_gamma`
 
 | 值 | 效果 |
 |----|------|
-| false | 直接使用 fusion 输出的 hybrid 值（已做过 gamma/clamp，范围在 [0,1] 内） |
-| true | 先 min-max 归一化到 [0,1] 再使用（适用于 hybrid 输出动态范围很窄的场景） |
+| false | 直接使用 raw `fused_hybrid` 值 |
+| true | 先 min-max 归一化到 [0,1] 再乘原图（适用于 raw hybrid 输出动态范围很窄的场景） |
 
 与 `filter.normalize_before` 独立，可分别配置。
 
@@ -690,6 +720,9 @@ result = hybrid^γ
 |------|------|
 | `threshold` | 亮度阈值 [0, 1] |
 | `normalize_before` | 若为 true，先对亮度做 [0,1] 归一化再比较阈值 |
+| `post_normalize` | 若为 true，阈值处理后再对保留的正值像素做归一化，过滤掉的 0 保持不变 |
+| `post_normalize_min` | 后处理归一化下限 [0, 1]。0 表示保留区域拉伸到 [0, 1]；0.2 表示拉伸到 [0.2, 1] |
+| `post_normalize_gamma` | 后处理 gamma，作用于归一化后的保留区域坐标。<1 放大弱响应，>1 压低弱响应，1 不改变 |
 
 ### 分位数法 (method = "quantile")
 
@@ -698,8 +731,19 @@ result = hybrid^γ
 | 参数 | 说明 |
 |------|------|
 | `quantile` | 保留亮度前百分之几的像素 (0, 100] |
+| `post_normalize` | 若为 true，分位数过滤后再对保留的正值像素做归一化 |
+| `post_normalize_min` | 后处理归一化下限 [0, 1] |
+| `post_normalize_gamma` | 后处理 gamma，必须 > 0 |
 
 无论哪种方法，过滤后保存为 `fused_add_filtered.png` / `fused_softmul_filtered.png` / `fused_hybrid_filtered.png`。
+
+后处理顺序为：
+
+```text
+fused_hybrid -> normalize_before(可选, 仅用于阈值比较) -> threshold/quantile 置 0 -> post_normalize(可选) -> gamma
+```
+
+`post_normalize` 只重映射过滤后仍大于 0 的像素，因此不会把已剔除的背景重新抬亮。gamma 作用在保留区域的 0~1 归一化坐标上，再映射到 `[post_normalize_min, 1]`，所以不会破坏配置的输出下限。该开关会影响 `Filt Add` / `Filt Mult` / `Filt Hybrid` 三张 filtered 输出，以及使用 `Filt Hybrid` 的 `Orig×Hyb` 和加权聚类输入。
 
 ---
 
@@ -873,3 +917,4 @@ FFT 前对 L\* 通道（亮度，始终 [0,1]）做 gamma 校正。a\*、b\* 不
 | `background_mask_morph` | disabled | 结构性先验，不应随图像统计量大幅变化 |
 | `background_fg_confidence` | disabled | 结构性先验 |
 | `subject_prior` | disabled | 结构性先验 |
+| `segment_foreground` | enabled | 区域前景先验，允许按区域分离度/背景抑制能力调整 multiplier |

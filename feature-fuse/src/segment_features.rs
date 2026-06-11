@@ -23,6 +23,10 @@ pub struct RegionFeature {
     pub edge_mean: f64,
     pub border_color_similarity: f64,
     pub color_stability: f64,
+    pub mean_saturation: f64,
+    pub red_green_affinity: f64,
+    pub background_penalty: f64,
+    pub vivid_rg_bonus: f64,
     pub bg_probability: f64,
     pub subject_confidence: f64,
     pub color_score: f64,
@@ -54,6 +58,7 @@ pub struct SegmentFeatureResult {
     pub bg_probability: Vec<f64>,
     pub saliency: Vec<f64>,
     pub subject_confidence: Vec<f64>,
+    pub foreground: Vec<f64>,
     pub region_color: RegionColorResult,
 }
 
@@ -123,9 +128,10 @@ pub fn compute_segment_features(
     let bg_probability = labels_to_region_map(&segmented.labels, &regions, |r| r.bg_probability);
     let subject_confidence =
         labels_to_region_map(&segmented.labels, &regions, |r| r.subject_confidence);
+    let foreground = build_segment_foreground(&bg_probability, &subject_confidence);
     let region_id_map = build_region_id_map(&segmented.labels, regions.len());
     compute_region_color_scores(&mut regions, &cfg.region_scoring);
-    let region_color = region_color_from_scores(&regions, &cfg.region_scoring);
+    let region_color = region_color_from_scores(&regions);
 
     Ok(SegmentFeatureResult {
         labels: segmented.labels,
@@ -135,6 +141,7 @@ pub fn compute_segment_features(
         bg_probability,
         saliency,
         subject_confidence,
+        foreground,
         region_color,
     })
 }
@@ -149,9 +156,19 @@ pub fn apply_segment_foreground_prior(
         .iter()
         .enumerate()
         .map(|(i, &fg)| {
-            let seg_fg = (1.0 - segment.bg_probability.get(i).copied().unwrap_or(1.0)) * 0.65
-                + segment.subject_confidence.get(i).copied().unwrap_or(0.0) * 0.35;
+            let seg_fg = segment.foreground.get(i).copied().unwrap_or(0.0);
             (fg * (1.0 - strength) + seg_fg * strength).clamp(0.0, 1.0)
+        })
+        .collect()
+}
+
+fn build_segment_foreground(bg_probability: &[f64], subject_confidence: &[f64]) -> Vec<f64> {
+    bg_probability
+        .iter()
+        .enumerate()
+        .map(|(i, &bg)| {
+            let subj = subject_confidence.get(i).copied().unwrap_or(0.0);
+            ((1.0 - bg) * 0.65 + subj * 0.35).clamp(0.0, 1.0)
         })
         .collect()
 }
@@ -371,6 +388,10 @@ fn build_region_feature(
     };
     let subject_confidence = ((1.0 - bg_probability) * 0.55 + subject_raw * 0.45).clamp(0.0, 1.0);
 
+    let mean_rgb = [acc.sum_r / area_f, acc.sum_g / area_f, acc.sum_b / area_f];
+    let (mean_hue, mean_saturation) = rgb_to_hsl_hue_sat(mean_rgb);
+    let red_green_affinity = red_green_hue_affinity(mean_hue, cfg.vivid_rg_hue_width);
+
     RegionFeature {
         id: region.id,
         cluster_id: region.cluster_id,
@@ -383,10 +404,14 @@ fn build_region_feature(
         edge_mean,
         border_color_similarity,
         color_stability,
+        mean_saturation,
+        red_green_affinity,
+        background_penalty: 0.0,
+        vivid_rg_bonus: 0.0,
         bg_probability,
         subject_confidence,
         color_score: 0.0,
-        mean_rgb: [acc.sum_r / area_f, acc.sum_g / area_f, acc.sum_b / area_f],
+        mean_rgb,
     }
 }
 
@@ -394,21 +419,80 @@ fn compute_region_color_scores(regions: &mut [RegionFeature], cfg: &RegionScorin
     for region in regions {
         let area_factor = region.area_ratio.max(1e-9).powf(cfg.area_power.max(0.05));
         let saliency = (region.saliency_mean * 0.70 + region.saliency_peak * 0.30).clamp(0.0, 1.0);
+        let large_area = smoothstep(
+            cfg.bg_flat_area_min_ratio,
+            cfg.bg_flat_area_full_ratio,
+            region.area_ratio,
+        );
+        let low_sat =
+            (1.0 - region.mean_saturation / cfg.bg_flat_sat_threshold.max(1e-6)).clamp(0.0, 1.0);
+        let high_sat = ((region.mean_saturation - cfg.vivid_rg_sat_threshold)
+            / (1.0 - cfg.vivid_rg_sat_threshold).max(1e-6))
+        .clamp(0.0, 1.0);
+        let background_penalty = (large_area * region.color_stability * low_sat).clamp(0.0, 1.0);
+        let vivid_rg_bonus = (large_area * high_sat * region.red_green_affinity).clamp(0.0, 1.0);
         let base = area_factor
             * region.subject_confidence
             * saliency.max(0.05)
             * (1.0 - region.bg_probability).clamp(0.0, 1.0);
-        region.color_score = (base
-            * (1.0 - cfg.color_stability_weight
-                + cfg.color_stability_weight * region.color_stability))
-            .max(0.0);
+        let stability_factor =
+            1.0 - cfg.color_stability_weight + cfg.color_stability_weight * region.color_stability;
+        let penalty_factor =
+            1.0 - cfg.bg_flat_penalty_strength.clamp(0.0, 1.0) * background_penalty;
+        let bonus_factor = 1.0 + cfg.vivid_rg_bonus_strength.max(0.0) * vivid_rg_bonus;
+
+        region.background_penalty = background_penalty;
+        region.vivid_rg_bonus = vivid_rg_bonus;
+        region.color_score =
+            (base * stability_factor * penalty_factor * bonus_factor).max(0.0);
     }
 }
 
-fn region_color_from_scores(
-    regions: &[RegionFeature],
-    cfg: &RegionScoringParams,
-) -> RegionColorResult {
+fn rgb_to_hsl_hue_sat(rgb: [f64; 3]) -> (f64, f64) {
+    let r = rgb[0].clamp(0.0, 1.0);
+    let g = rgb[1].clamp(0.0, 1.0);
+    let b = rgb[2].clamp(0.0, 1.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let d = max - min;
+    if d <= 1e-12 {
+        return (0.0, 0.0);
+    }
+
+    let l = (max + min) * 0.5;
+    let s = d / (1.0 - (2.0 * l - 1.0).abs()).max(1e-12);
+    let h = if (max - r).abs() < 1e-12 {
+        60.0 * (((g - b) / d).rem_euclid(6.0))
+    } else if (max - g).abs() < 1e-12 {
+        60.0 * ((b - r) / d + 2.0)
+    } else {
+        60.0 * ((r - g) / d + 4.0)
+    };
+    (h.rem_euclid(360.0), s.clamp(0.0, 1.0))
+}
+
+fn red_green_hue_affinity(hue: f64, width_degrees: f64) -> f64 {
+    let width = width_degrees.max(1.0);
+    let red = circular_hue_affinity(hue, 0.0, width);
+    let green = circular_hue_affinity(hue, 120.0, width);
+    red.max(green)
+}
+
+fn circular_hue_affinity(hue: f64, center: f64, width: f64) -> f64 {
+    let d = (hue - center).rem_euclid(360.0);
+    let dist = d.min(360.0 - d);
+    (1.0 - dist / width).clamp(0.0, 1.0)
+}
+
+fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
+    if edge1 <= edge0 {
+        return if x >= edge1 { 1.0 } else { 0.0 };
+    }
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn region_color_from_scores(regions: &[RegionFeature]) -> RegionColorResult {
     let mut ranked: Vec<&RegionFeature> = regions.iter().filter(|r| r.color_score > 0.0).collect();
     ranked.sort_by(|a, b| {
         b.color_score
@@ -416,28 +500,18 @@ fn region_color_from_scores(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let top_k = cfg.region_color_top_k.max(1);
-    let mut rgb = [0.0; 3];
-    let mut score_sum = 0.0;
-    let mut ids = Vec::new();
-    for r in ranked.into_iter().take(top_k) {
-        rgb[0] += r.mean_rgb[0] * r.color_score;
-        rgb[1] += r.mean_rgb[1] * r.color_score;
-        rgb[2] += r.mean_rgb[2] * r.color_score;
-        score_sum += r.color_score;
-        ids.push(r.id);
-    }
-
-    if score_sum > 0.0 {
-        rgb[0] /= score_sum;
-        rgb[1] /= score_sum;
-        rgb[2] /= score_sum;
+    if let Some(region) = ranked.first() {
+        return RegionColorResult {
+            rgb: region.mean_rgb,
+            score: region.color_score,
+            contributing_regions: vec![region.id],
+        };
     }
 
     RegionColorResult {
-        rgb,
-        score: score_sum,
-        contributing_regions: ids,
+        rgb: [0.0; 3],
+        score: 0.0,
+        contributing_regions: Vec::new(),
     }
 }
 

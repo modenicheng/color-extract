@@ -224,7 +224,7 @@ fn multiplier_from_score(stat_score: f64, cfg: &DynamicWeightsConfig) -> f64 {
 // =============================================================================
 
 /// 对应 Weights 结构体字段顺序的特征名称
-const FEATURE_NAMES: [&str; 18] = [
+const FEATURE_NAMES: [&str; 19] = [
     "dct",
     "lab_grad",
     "spectral",
@@ -243,10 +243,11 @@ const FEATURE_NAMES: [&str; 18] = [
     "abs_lab_a",
     "abs_lab_b",
     "abs_sat",
+    "segment_foreground",
 ];
 
 /// 从 per_feature 配置中提取各特征是否启用动态权重
-fn per_feature_enabled(per_feat: &DynamicWeightsPerFeature) -> [bool; 18] {
+fn per_feature_enabled(per_feat: &DynamicWeightsPerFeature) -> [bool; 19] {
     [
         per_feat.dct.enabled,
         per_feat.lab_grad.enabled,
@@ -266,15 +267,16 @@ fn per_feature_enabled(per_feat: &DynamicWeightsPerFeature) -> [bool; 18] {
         per_feat.abs_lab_a.enabled,
         per_feat.abs_lab_b.enabled,
         per_feat.abs_sat.enabled,
+        per_feat.segment_foreground.enabled,
     ]
 }
 
 /// 计算所有特征的动态权重
 ///
 /// # Arguments
-/// * `features` - 18 个特征图（顺序与 Weights 结构体字段一致）
-/// * `base_add` - 加法分支 base weight 数组（长度 18）
-/// * `base_mul` - 乘法分支 base weight 数组（长度 18）
+/// * `features` - 19 个特征图（顺序与 Weights 结构体字段一致）
+/// * `base_add` - 加法分支 base weight 数组（长度 19）
+/// * `base_mul` - 乘法分支 base weight 数组（长度 19）
 /// * `cfg` - 动态权重配置
 ///
 /// # Returns
@@ -287,12 +289,12 @@ pub fn compute_dynamic_weights(
     region_ctx: Option<&RegionWeightContext<'_>>,
     region_cfg: Option<&RegionDynamicWeightsParams>,
 ) -> DynamicWeightsResult {
-    assert_eq!(features.len(), 18);
-    assert_eq!(base_add.len(), 18);
-    assert_eq!(base_mul.len(), 18);
+    assert_eq!(features.len(), 19);
+    assert_eq!(base_add.len(), 19);
+    assert_eq!(base_mul.len(), 19);
 
     let enabled_flags = per_feature_enabled(&cfg.per_feature);
-    let n_features = 18usize;
+    let n_features = 19usize;
 
     let mut add_weights = vec![0.0_f64; n_features];
     let mut mul_weights = vec![0.0_f64; n_features];

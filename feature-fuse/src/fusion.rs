@@ -75,6 +75,7 @@ pub fn weights_to_array(w: &Weights) -> Vec<f64> {
         w.abs_lab_a,
         w.abs_lab_b,
         w.abs_sat,
+        w.segment_foreground,
     ]
 }
 
@@ -386,11 +387,11 @@ pub fn kmeans_impression_color(
     centroids[best]
 }
 
-/// 加权聚类：对所有原图像素做 k-means，使用 FuseHybrid 作为每像素权重。
+/// 加权聚类：对原图像素做 k-means，使用传入的融合图作为每像素权重。
 ///
 /// 与 `kmeans_impression_color` 不同：
-///   - 不使用阈值过滤（所有像素都参与聚类）
-///   - 每个像素的权重 = hybrid 值（可配是否先归一化）
+///   - 传入 raw hybrid 时所有权重大于 0 的像素参与；传入 FiltHybrid 时只保留过滤后的像素
+///   - 每个像素的权重 = fusion map 值（可配是否先归一化）
 ///   - 聚类更新时使用加权质心
 ///   - 输出「权 × 簇大小」最大的簇的质心（而非纯粹像素数最多的簇）
 ///
@@ -601,8 +602,61 @@ pub fn apply_filter(data: &[f64], filter: &FilterParams) -> Vec<f64> {
         _ => unreachable!(),
     }
 
-    data.iter()
+    let filtered: Vec<f64> = data
+        .iter()
         .zip(brightness.iter())
         .map(|(&orig, &b)| if b >= threshold { orig } else { 0.0 })
+        .collect();
+
+    if filter.post_normalize {
+        post_normalize_filtered(
+            &filtered,
+            filter.post_normalize_min,
+            filter.post_normalize_gamma,
+        )
+    } else {
+        filtered
+    }
+}
+
+/// 阈值过滤后只重拉伸保留区域，过滤掉的 0 继续保持为 0。
+fn post_normalize_filtered(data: &[f64], min_out: f64, gamma: f64) -> Vec<f64> {
+    let min_out = min_out.clamp(0.0, 1.0);
+    let gamma = if gamma.is_finite() && gamma > 0.0 {
+        gamma
+    } else {
+        1.0
+    };
+    let mut lo = f64::MAX;
+    let mut hi = f64::NEG_INFINITY;
+
+    for &v in data {
+        if v > 0.0 {
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+    }
+
+    if !lo.is_finite() || !hi.is_finite() {
+        return data.to_vec();
+    }
+
+    let range = hi - lo;
+    if range <= 1e-12 {
+        return data
+            .iter()
+            .map(|&v| if v > 0.0 { 1.0 } else { 0.0 })
+            .collect();
+    }
+
+    data.iter()
+        .map(|&v| {
+            if v > 0.0 {
+                let t = ((v - lo) / range).clamp(0.0, 1.0).powf(gamma);
+                min_out + t * (1.0 - min_out)
+            } else {
+                0.0
+            }
+        })
         .collect()
 }

@@ -63,6 +63,8 @@ pub struct Weights {
     pub abs_lab_a: f64,
     pub abs_lab_b: f64,
     pub abs_sat: f64,
+    #[serde(default)]
+    pub segment_foreground: f64,
 }
 
 // =============================================================================
@@ -82,7 +84,7 @@ impl Default for FeatureDynamicConfig {
     }
 }
 
-/// 各特征动态权重开关（18 个特征）
+/// 各特征动态权重开关（19 个特征）
 #[derive(Debug, Deserialize, Clone)]
 pub struct DynamicWeightsPerFeature {
     #[serde(default)]
@@ -121,6 +123,8 @@ pub struct DynamicWeightsPerFeature {
     pub abs_lab_b: FeatureDynamicConfig,
     #[serde(default)]
     pub abs_sat: FeatureDynamicConfig,
+    #[serde(default)]
+    pub segment_foreground: FeatureDynamicConfig,
 }
 
 impl Default for DynamicWeightsPerFeature {
@@ -144,6 +148,7 @@ impl Default for DynamicWeightsPerFeature {
             abs_lab_a: FeatureDynamicConfig::default(),
             abs_lab_b: FeatureDynamicConfig::default(),
             abs_sat: FeatureDynamicConfig::default(),
+            segment_foreground: FeatureDynamicConfig::default(),
         }
     }
 }
@@ -273,7 +278,13 @@ pub struct RegionScoringParams {
     pub background_correction_strength: f64,
     pub area_power: f64,
     pub color_stability_weight: f64,
-    pub region_color_top_k: usize,
+    pub bg_flat_penalty_strength: f64,
+    pub bg_flat_area_min_ratio: f64,
+    pub bg_flat_area_full_ratio: f64,
+    pub bg_flat_sat_threshold: f64,
+    pub vivid_rg_bonus_strength: f64,
+    pub vivid_rg_sat_threshold: f64,
+    pub vivid_rg_hue_width: f64,
 }
 
 impl Default for RegionScoringParams {
@@ -294,10 +305,16 @@ impl Default for RegionScoringParams {
             subject_saliency_weight: 0.45,
             subject_edge_weight: 0.20,
             subject_protect_strength: 0.55,
-            background_correction_strength: 0.45,
+            background_correction_strength: 0.0,
             area_power: 0.55,
             color_stability_weight: 0.30,
-            region_color_top_k: 3,
+            bg_flat_penalty_strength: 0.55,
+            bg_flat_area_min_ratio: 0.08,
+            bg_flat_area_full_ratio: 0.35,
+            bg_flat_sat_threshold: 0.28,
+            vivid_rg_bonus_strength: 0.12,
+            vivid_rg_sat_threshold: 0.45,
+            vivid_rg_hue_width: 38.0,
         }
     }
 }
@@ -488,6 +505,12 @@ pub struct FilterParams {
     pub threshold: Option<f64>,
     pub normalize_before: Option<bool>,
     pub quantile: Option<f64>,
+    #[serde(default)]
+    pub post_normalize: bool,
+    #[serde(default)]
+    pub post_normalize_min: f64,
+    #[serde(default = "default_post_normalize_gamma")]
+    pub post_normalize_gamma: f64,
 }
 
 // =============================================================================
@@ -853,6 +876,9 @@ fn default_radius_x() -> f64 {
 fn default_radius_y() -> f64 {
     0.45
 }
+fn default_post_normalize_gamma() -> f64 {
+    1.0
+}
 
 /// 校验 filter 配置：互斥检查 + 值域检查
 pub fn validate_filter(filter: &FilterParams) -> Result<(), anyhow::Error> {
@@ -888,6 +914,18 @@ pub fn validate_filter(filter: &FilterParams) -> Result<(), anyhow::Error> {
             }
         }
         other => anyhow::bail!("filter.method must be 'threshold' or 'quantile', got '{other}'"),
+    }
+    if !(0.0..=1.0).contains(&filter.post_normalize_min) {
+        anyhow::bail!(
+            "filter.post_normalize_min must be in [0, 1], got {}",
+            filter.post_normalize_min
+        );
+    }
+    if !filter.post_normalize_gamma.is_finite() || filter.post_normalize_gamma <= 0.0 {
+        anyhow::bail!(
+            "filter.post_normalize_gamma must be finite and > 0, got {}",
+            filter.post_normalize_gamma
+        );
     }
     Ok(())
 }
