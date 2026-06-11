@@ -19,6 +19,8 @@
 5. [特征权重](#5-特征权重)
 6. [Hybrid Fusion](#6-hybrid-fusion-参数)
    - [6a. Direct Blend](#6a-direct-blend-参数)
+   - [6b. Impression Background](#6b-impression-background-颜色聚类背景氛围回流)
+   - [6c. Impression Cluster Scoring](#6c-impression-cluster-scoring-最终簇级评分)
 7. [最终过滤](#7-最终-fuse-图过滤)
 8. [Contact Sheet](#8-contact-sheet-拼贴图布局)
 9. [DCT 纹理复杂度](#9-dct-纹理复杂度参数)
@@ -692,13 +694,11 @@ result = hybrid^γ
 
 ## 6a. Direct Blend 参数
 
-无阈值过滤的 Hybrid × 原图，以及加权聚类预测色。
+无阈值过滤的 Hybrid × 原图。
 
 **`direct_blend.normalize_before`** — 在无阈值复合图乘原图之前，是否先对 raw `fused_hybrid` 做 [0,1] 归一化。
 
 - `fused_original_hybrid_nothreshold.png` 使用未过滤的 raw `fused_hybrid`
-- `weighted cluster` 直接使用过滤后的 `fused_hybrid_filtered` 数值，不再二次归一化，因此会精确响应 `filter.post_normalize_min` / `filter.post_normalize_gamma`
-- filtered 聚类的最终簇得分 = `簇大小 × 簇平均权重`，等价于簇内过滤权重总和；不会再用 `weight_sum × count` 把簇大小算两次
 
 | 值 | 效果 |
 |----|------|
@@ -706,6 +706,108 @@ result = hybrid^γ
 | true | 先 min-max 归一化到 [0,1] 再乘原图（适用于 raw hybrid 输出动态范围很窄的场景） |
 
 与 `filter.normalize_before` 独立，可分别配置。
+
+---
+
+## 6b. Impression Background 颜色聚类背景氛围回流
+
+该段只影响最终颜色聚类使用的权重图，不改写 `background_mask_morph` / `background_fg_confidence`，也不改变 `fused_hybrid_filtered.png`。目的是让大面积、稳定、有明确整体色调的背景在印象色里保留一部分权重，避免背景被去除得过猛。
+
+颜色聚类实际输入为：
+
+```text
+pre_cluster_weight = fused_hybrid_filtered + background_impression_weight
+color_cluster_weight_final = pre_cluster_weight × (1 - neutral_background_suppression)
+```
+
+其中 `background_impression_weight` 按 segment region 计算：
+
+```text
+bg_probability × effective_area_prior × tone_harmony × colorfulness_gate × stability_gate × (1 - subject_confidence) × strength
+```
+
+`effective_area_prior` 不只看单个 region 面积，还会累计色调相近且背景概率较高的其他 region 面积。因此多层天空、夜景、舞台背景被分成几块时，仍可作为整体氛围参与印象色。
+
+输出诊断：
+
+- `background_impression_weight.png`：允许回流的背景氛围权重
+- `neutral_background_suppression.png`：近黑/近白大背景的聚类权重惩罚，越亮表示压得越多
+- `cluster_background_hint.png`：最终簇评分使用的背景提示图，融合传统背景、segment 背景和中性背景惩罚
+- `color_cluster_weight_final.png`：最终喂给 `weighted cluster` / `impression color` 的权重图
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `enabled` | true | 是否启用背景氛围回流 |
+| `strength` | 0.22 | ambient 通道整体强度。调大→大面积背景更影响最终主色 |
+| `min_area_ratio` | 0.18 | 区域面积达到该比例后开始回流 |
+| `full_area_ratio` | 0.55 | 区域面积达到该比例后面积权重为 1 |
+| `min_saturation` | 0.08 | 低于该饱和度的背景回流会被压低，避免灰/白/黑铺底过度代表主色 |
+| `colorfulness_weight` | 0.35 | 色彩鲜明程度在 ambient 分数中的权重 |
+| `tone_harmony_weight` | 0.35 | 与整体/背景色调一致性在 ambient 分数中的权重 |
+| `stability_weight` | 0.30 | 区域颜色稳定性在 ambient 分数中的权重 |
+| `max_weight` | 0.35 | 单像素 ambient 权重上限，避免背景覆盖主体权重 |
+| `neutral_suppression_enabled` | true | 是否启用近黑/近白大背景惩罚 |
+| `neutral_suppression_strength` | 0.85 | 中性背景惩罚强度。调大→白底/黑底更难赢得最终聚类 |
+| `neutral_sat_threshold` | 0.12 | 低于该饱和度才视为黑/白/灰中性背景候选 |
+| `neutral_black_l_threshold` | 16.0 | L* 低于该值附近视为近黑背景 |
+| `neutral_white_l_threshold` | 92.0 | L* 高于该值附近视为近白背景 |
+| `neutral_light_softness` | 10.0 | 黑/白阈值软过渡宽度 |
+| `neutral_bg_probability_threshold` | 0.45 | segment 背景概率达到该值后开始惩罚 |
+| `neutral_min_effective_area_ratio` | 0.12 | 相似背景有效面积达到该比例后开始惩罚 |
+| `neutral_full_effective_area_ratio` | 0.35 | 相似背景有效面积达到该比例后惩罚面积门控为 1 |
+
+中性背景惩罚只在「像背景 + 低饱和 + 近黑/近白 + 相似背景累计面积大」同时成立时生效，用于避免白底/黑底图片被画布色吞掉；它不改变背景 debug 图本身。
+
+`weighted cluster` 不会对 `color_cluster_weight_final` 二次归一化，因此会响应 `filter.post_normalize_min` / `filter.post_normalize_gamma`，也会响应本段的 `strength` 和 `neutral_suppression_strength`。
+
+---
+
+## 6c. Impression Cluster Scoring 最终簇级评分
+
+K-Means 仍然负责按 RGB 距离把颜色分簇；本段只决定最终选择哪个簇作为 `Imp Color` / `Pred Color`。旧逻辑直接选择 `weight_sum` 最大的簇，等价于 `簇面积 × 簇平均权重`，大面积白底、黑底或浅色残留容易凭总量胜出。
+
+新评分改为：
+
+```text
+area_component = area_ratio ^ area_power
+mean_weight_component = mean_weight ^ mean_weight_power
+peak_weight_component = p90_weight ^ peak_weight_power
+
+base_score = weighted_average(area_component, mean_weight_component, peak_weight_component)
+final_score = base_score
+            × saturation_multiplier
+            × neutral_penalty
+            × background_penalty
+            × min_area_gate
+```
+
+其中 `area_power < 1` 会压缩面积优势；`p90_weight` 让小面积高响应色块有机会胜出；`neutral_penalty` 用于压低低饱和大面积簇；`background_penalty` 来自 `cluster_background_hint.png`，但会对高饱和簇放松惩罚，避免有色背景完全失声。
+
+每张图会额外输出 `cluster_diagnostics.json`，包含每个簇的 `hex`、`area_ratio`、`mean_weight`、`p90_weight`、`saturation`、`background_mean`、各乘子和 `final_score`，用于解释最终为什么选中某个颜色。
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `cluster_scoring.enabled` | true | false 时回到旧的 `weight_sum` 选簇 |
+| `cluster_scoring.area_power` | 0.45 | 面积压缩指数。越小越削弱大面积簇；1.0 等价线性面积 |
+| `cluster_scoring.mean_weight_power` | 1.0 | 平均权重指数。>1 更偏向高均值簇 |
+| `cluster_scoring.peak_weight_power` | 0.80 | p90 峰值权重指数。<1 更慷慨地保留局部高响应 |
+| `cluster_scoring.area_weight` | 0.45 | base_score 中面积项权重 |
+| `cluster_scoring.mean_weight_weight` | 0.35 | base_score 中平均权重项权重 |
+| `cluster_scoring.peak_weight_weight` | 0.20 | base_score 中 p90 权重项权重 |
+| `cluster_scoring.saturation_bonus` | 0.25 | 高饱和簇的轻微奖励，帮助彩色印象色对抗灰白大面积 |
+| `cluster_scoring.neutral_penalty_strength` | 0.75 | 低饱和大面积簇惩罚强度 |
+| `cluster_scoring.neutral_sat_threshold` | 0.16 | 饱和度低于此值附近进入中性簇惩罚 |
+| `cluster_scoring.neutral_min_area_ratio` | 0.08 | 中性簇面积达到该比例后开始惩罚 |
+| `cluster_scoring.neutral_full_area_ratio` | 0.35 | 中性簇面积达到该比例后惩罚满额 |
+| `cluster_scoring.background_penalty_strength` | 0.35 | 背景提示图对最终簇的惩罚强度 |
+| `cluster_scoring.min_cluster_area_ratio` | 0.002 | 极小簇软门控阈值，避免单点噪声胜出 |
+
+调参方向：
+
+- 正确色块很亮但面积小仍输：降低 `area_power`，或提高 `peak_weight_weight`。
+- 彩色小块过度胜出：提高 `area_power`，降低 `peak_weight_weight` 或 `saturation_bonus`。
+- 白底/黑底仍常胜：提高 `neutral_penalty_strength` 或 `background_penalty_strength`。
+- 有色背景应该代表整体但被压掉：降低 `background_penalty_strength`，或提高 `saturation_bonus`。
 
 ---
 
@@ -744,7 +846,7 @@ result = hybrid^γ
 fused_hybrid -> normalize_before(可选, 仅用于阈值比较) -> threshold/quantile 置 0 -> post_normalize(可选) -> gamma
 ```
 
-`post_normalize` 只重映射过滤后仍大于 0 的像素，因此不会把已剔除的背景重新抬亮。gamma 作用在保留区域的 0~1 归一化坐标上，再映射到 `[post_normalize_min, 1]`，所以不会破坏配置的输出下限。该开关会影响 `Filt Add` / `Filt Mult` / `Filt Hybrid` 三张 filtered 输出，以及使用 `Filt Hybrid` 的 `Orig×Hyb` 和加权聚类输入。
+`post_normalize` 只重映射过滤后仍大于 0 的像素，因此不会把已剔除的背景重新抬亮。gamma 作用在保留区域的 0~1 归一化坐标上，再映射到 `[post_normalize_min, 1]`，所以不会破坏配置的输出下限。该开关会影响 `Filt Add` / `Filt Mult` / `Filt Hybrid` 三张 filtered 输出，以及使用 `Filt Hybrid` 的 `Orig×Hyb`。颜色聚类会在 `Filt Hybrid` 之后再叠加可选的 `impression_background`，最终输入见 `color_cluster_weight_final.png`。
 
 ---
 
@@ -857,9 +959,11 @@ FFT 前对 L\* 通道（亮度，始终 [0,1]）做 gamma 校正。a\*、b\* 不
 |------|------|------|
 | `k` | 4 | 聚类数量。调大→更细分，调小→更概括 |
 | `max_iter` | 10 | K-means Lloyd 迭代次数上限。通常 5~10 次即可收敛 |
-| `sample_method` | stride | "stride" — 间隔网格采样；"all" — 全部 filtered > 0 像素 |
+| `sample_method` | stride | "stride" — 间隔网格采样；"all" — 全部最终聚类权重 > 0 像素 |
 | `sample_stride` | 4 | 网格采样步长。stride=1 等价于 "all"。stride=4 → 每 4 像素取一个，样本量约 1/16。建议范围: 2~8 |
 | `seed` | 42 | K-Means++ 初始化的随机数种子。固定种子保证同图同参数结果可复现 |
+
+最终胜出簇由 `impression.cluster_scoring` 控制，详见 [6c](#6c-impression-cluster-scoring-最终簇级评分)。`k` 和 `sample_stride` 影响候选簇如何形成，`cluster_scoring` 决定哪个候选簇被输出。
 
 ---
 

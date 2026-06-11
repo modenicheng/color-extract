@@ -28,6 +28,8 @@ pub struct Params {
     #[serde(default)]
     pub impression: ImpressionParams,
     #[serde(default)]
+    pub impression_background: ImpressionBackgroundParams,
+    #[serde(default)]
     pub dynamic_weights: DynamicWeightsConfig,
     #[serde(default)]
     pub saturation: SaturationParams,
@@ -330,6 +332,76 @@ pub struct RegionDynamicWeightsParams {
     pub bg_suppression_weight: f64,
 }
 
+// =============================================================================
+// Impression background 参数
+// =============================================================================
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct ImpressionBackgroundParams {
+    /// 是否在最终颜色聚类权重中允许大面积背景以 ambient 通道回流。
+    pub enabled: bool,
+    /// ambient 通道整体强度；0 = 不影响颜色聚类。
+    pub strength: f64,
+    /// 区域面积达到该比例后开始回流。
+    pub min_area_ratio: f64,
+    /// 区域面积达到该比例后面积权重为 1。
+    pub full_area_ratio: f64,
+    /// 饱和度低于该值时，背景回流会明显收缩。
+    pub min_saturation: f64,
+    /// 色彩鲜明程度在 ambient 分数中的权重。
+    pub colorfulness_weight: f64,
+    /// 与整体/背景色调一致性在 ambient 分数中的权重。
+    pub tone_harmony_weight: f64,
+    /// 区域颜色稳定性在 ambient 分数中的权重。
+    pub stability_weight: f64,
+    /// 单像素 ambient 权重上限，避免背景覆盖主体权重。
+    pub max_weight: f64,
+    /// 是否压低大面积近黑/近白低饱和背景在最终颜色聚类中的权重。
+    pub neutral_suppression_enabled: bool,
+    /// 中性背景惩罚强度；1 表示符合条件的区域可被压到接近 0。
+    pub neutral_suppression_strength: f64,
+    /// 低于该饱和度时才认为是黑/白/灰中性背景候选。
+    pub neutral_sat_threshold: f64,
+    /// L* 低于该值附近视为近黑背景。
+    pub neutral_black_l_threshold: f64,
+    /// L* 高于该值附近视为近白背景。
+    pub neutral_white_l_threshold: f64,
+    /// 黑/白阈值的软过渡宽度，避免硬切。
+    pub neutral_light_softness: f64,
+    /// segment 背景概率达到该值后开始惩罚。
+    pub neutral_bg_probability_threshold: f64,
+    /// 相似背景有效面积达到该比例后开始惩罚。
+    pub neutral_min_effective_area_ratio: f64,
+    /// 相似背景有效面积达到该比例后惩罚面积门控为 1。
+    pub neutral_full_effective_area_ratio: f64,
+}
+
+impl Default for ImpressionBackgroundParams {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            strength: 0.22,
+            min_area_ratio: 0.18,
+            full_area_ratio: 0.55,
+            min_saturation: 0.08,
+            colorfulness_weight: 0.35,
+            tone_harmony_weight: 0.35,
+            stability_weight: 0.30,
+            max_weight: 0.35,
+            neutral_suppression_enabled: true,
+            neutral_suppression_strength: 0.85,
+            neutral_sat_threshold: 0.12,
+            neutral_black_l_threshold: 16.0,
+            neutral_white_l_threshold: 92.0,
+            neutral_light_softness: 10.0,
+            neutral_bg_probability_threshold: 0.45,
+            neutral_min_effective_area_ratio: 0.12,
+            neutral_full_effective_area_ratio: 0.35,
+        }
+    }
+}
+
 impl Default for RegionDynamicWeightsParams {
     fn default() -> Self {
         Self {
@@ -551,6 +623,9 @@ pub struct ImpressionParams {
     pub sample_stride: usize,
     /// K-Means++ 初始化随机数种子 (固定可保证结果可复现)
     pub seed: u64,
+    /// 最终簇选择评分。K-Means 本身仍按颜色聚类，本段只决定哪个簇作为印象色输出。
+    #[serde(default)]
+    pub cluster_scoring: ClusterScoringParams,
 }
 
 impl Default for ImpressionParams {
@@ -561,6 +636,47 @@ impl Default for ImpressionParams {
             sample_method: "stride".to_string(),
             sample_stride: 4,
             seed: 42,
+            cluster_scoring: ClusterScoringParams::default(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct ClusterScoringParams {
+    pub enabled: bool,
+    pub area_power: f64,
+    pub mean_weight_power: f64,
+    pub peak_weight_power: f64,
+    pub area_weight: f64,
+    pub mean_weight_weight: f64,
+    pub peak_weight_weight: f64,
+    pub saturation_bonus: f64,
+    pub neutral_penalty_strength: f64,
+    pub neutral_sat_threshold: f64,
+    pub neutral_min_area_ratio: f64,
+    pub neutral_full_area_ratio: f64,
+    pub background_penalty_strength: f64,
+    pub min_cluster_area_ratio: f64,
+}
+
+impl Default for ClusterScoringParams {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            area_power: 0.45,
+            mean_weight_power: 1.0,
+            peak_weight_power: 0.80,
+            area_weight: 0.45,
+            mean_weight_weight: 0.35,
+            peak_weight_weight: 0.20,
+            saturation_bonus: 0.25,
+            neutral_penalty_strength: 0.75,
+            neutral_sat_threshold: 0.16,
+            neutral_min_area_ratio: 0.08,
+            neutral_full_area_ratio: 0.35,
+            background_penalty_strength: 0.35,
+            min_cluster_area_ratio: 0.002,
         }
     }
 }

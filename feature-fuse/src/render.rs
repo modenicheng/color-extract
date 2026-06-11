@@ -280,6 +280,10 @@ fn shorten_feature_name(name: &str) -> String {
         "segment_bg_probability" => "Seg BG",
         "segment_saliency" => "Seg Sal",
         "segment_subject_confidence" => "Seg Subj",
+        "background_impression_weight" => "BG Amb",
+        "neutral_background_suppression" => "BG Neu",
+        "cluster_background_hint" => "Cl BG",
+        "color_cluster_weight_final" => "Clust W",
         other => other,
     }
     .to_string()

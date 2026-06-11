@@ -38,7 +38,8 @@ use crate::residual::{
     compute_local_light_residual, compute_local_sat_residual,
 };
 use crate::segment_features::{
-    SegmentFeatureResult, apply_segment_foreground_prior, compute_segment_features,
+    SegmentFeatureResult, apply_segment_foreground_prior, compute_background_impression_weight,
+    compute_neutral_background_suppression, compute_segment_features,
 };
 use crate::spectral::compute_spectral_residual;
 
@@ -619,6 +620,172 @@ fn process_one_image(
         )?;
     }
 
+    // ── 颜色聚类权重：FiltHybrid + 可控背景氛围回流 ──
+    let background_impression_weight = compute_background_impression_weight(
+        segment_result.as_ref(),
+        &params.impression_background,
+        fused_hyb_filt.len(),
+    );
+    let color_cluster_weight_pre_neutral: Vec<f64> = fused_hyb_filt
+        .iter()
+        .zip(background_impression_weight.iter())
+        .map(|(&subject_weight, &ambient_weight)| (subject_weight + ambient_weight).clamp(0.0, 1.0))
+        .collect();
+    let neutral_background_suppression = compute_neutral_background_suppression(
+        segment_result.as_ref(),
+        &data.lab_l,
+        &params.impression_background,
+        fused_hyb_filt.len(),
+    );
+    let color_cluster_weight: Vec<f64> = color_cluster_weight_pre_neutral
+        .iter()
+        .zip(neutral_background_suppression.iter())
+        .map(|(&weight, &suppression)| (weight * (1.0 - suppression.clamp(0.0, 1.0))).clamp(0.0, 1.0))
+        .collect();
+
+    // ═══════════════════════════════════════════════════════════════
+    // 诊断：中性背景惩罚在聚类前的实际效果
+    // ═══════════════════════════════════════════════════════════════
+    {
+        let n_pixels = color_cluster_weight.len();
+        // suppression 非零值分布
+        let mut supp_pos: Vec<f64> = neutral_background_suppression
+            .iter()
+            .filter(|&&s| s > 0.0)
+            .copied()
+            .collect();
+        let supp_active_ratio = supp_pos.len() as f64 / n_pixels.max(1) as f64;
+        if !supp_pos.is_empty() {
+            supp_pos.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+            let sn = supp_pos.len();
+            println!(
+                "  [diag] neutral_suppression: active={:.1}% ({}/{}), p50={:.4}, p90={:.4}, p99={:.4}, max={:.4}",
+                supp_active_ratio * 100.0,
+                supp_pos.len(),
+                n_pixels,
+                supp_pos[sn / 2],
+                supp_pos[sn * 9 / 10],
+                supp_pos[sn * 99 / 100],
+                supp_pos.last().unwrap(),
+            );
+        } else {
+            println!(
+                "  [diag] neutral_suppression: ALL ZERO (active=0/{})",
+                n_pixels,
+            );
+        }
+
+        // 黑像素 (L*<20) 和白像素 (L*>85) 在 color_cluster_weight 中的分布
+        let black_weights: Vec<f64> = color_cluster_weight
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| data.lab_l[*i] < 20.0)
+            .map(|(_, &w)| w)
+            .collect();
+        let white_weights: Vec<f64> = color_cluster_weight
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| data.lab_l[*i] > 85.0)
+            .map(|(_, &w)| w)
+            .collect();
+        // 预中性权重中黑/白像素的分布（对比）
+        let black_pre: Vec<f64> = color_cluster_weight_pre_neutral
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| data.lab_l[*i] < 20.0)
+            .map(|(_, &w)| w)
+            .collect();
+        let white_pre: Vec<f64> = color_cluster_weight_pre_neutral
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| data.lab_l[*i] > 85.0)
+            .map(|(_, &w)| w)
+            .collect();
+
+        let print_extreme_stats = |label: &str, weights: &[f64], pre: &[f64]| {
+            if weights.is_empty() {
+                println!("  [diag] {label}: no pixels");
+                return;
+            }
+            let n = weights.len() as f64;
+            let sum_w: f64 = weights.iter().sum();
+            let sum_pre: f64 = pre.iter().sum();
+            let mean_w = sum_w / n;
+            let mean_pre = sum_pre / n;
+            let nonzero = weights.iter().filter(|&&w| w > 0.0).count();
+            // 加权平均（像素权重对聚类的实际贡献）
+            println!(
+                "  [diag] {label}: count={}, mean_pre={:.4}, mean_final={:.4}, reduction={:.1}%, nonzero={}/{} sum_pre={:.1} sum_final={:.1}",
+                weights.len(),
+                mean_pre,
+                mean_w,
+                (1.0 - mean_w / mean_pre.max(1e-12)) * 100.0,
+                nonzero,
+                weights.len(),
+                sum_pre,
+                sum_w,
+            );
+        };
+        print_extreme_stats("black(L*<20)", &black_weights, &black_pre);
+        print_extreme_stats("white(L*>85)", &white_weights, &white_pre);
+
+        // color_cluster_weight 总体分布
+        let mut all_weights: Vec<f64> = color_cluster_weight
+            .iter()
+            .filter(|&&w| w > 0.0)
+            .copied()
+            .collect();
+        if !all_weights.is_empty() {
+            all_weights.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+            let an = all_weights.len();
+            println!(
+                "  [diag] color_cluster_weight>0: active={:.1}%, p10={:.4}, p50={:.4}, p90={:.4}, max={:.4}",
+                all_weights.len() as f64 / n_pixels as f64 * 100.0,
+                all_weights[an / 10],
+                all_weights[an / 2],
+                all_weights[an * 9 / 10],
+                all_weights.last().unwrap(),
+            );
+        }
+    }
+
+    save_gray_png(
+        &background_impression_weight,
+        w,
+        h,
+        &out_dir.join("background_impression_weight.png"),
+    )?;
+    save_gray_png(
+        &neutral_background_suppression,
+        w,
+        h,
+        &out_dir.join("neutral_background_suppression.png"),
+    )?;
+    save_gray_png(
+        &color_cluster_weight,
+        w,
+        h,
+        &out_dir.join("color_cluster_weight_final.png"),
+    )?;
+
+    let cluster_background_hint: Vec<f64> = (0..color_cluster_weight.len())
+        .map(|i| {
+            let traditional_bg = bg_result.diagnostics.bg_mask_after_protect[i].clamp(0.0, 1.0);
+            let segment_bg = segment_result
+                .as_ref()
+                .map(|seg| seg.bg_probability[i].clamp(0.0, 1.0))
+                .unwrap_or(0.0);
+            let neutral_bg = neutral_background_suppression[i].clamp(0.0, 1.0);
+            (traditional_bg * 0.55 + segment_bg * 0.25 + neutral_bg * 0.20).clamp(0.0, 1.0)
+        })
+        .collect();
+    save_gray_png(
+        &cluster_background_hint,
+        w,
+        h,
+        &out_dir.join("cluster_background_hint.png"),
+    )?;
+
     // ── Original × FiltHybrid 复合图 ──
     let composite_rgb = composite_with_hybrid(&data.rgb, &fused_hyb_filt);
     save_rgb_png(
@@ -641,30 +808,36 @@ fn process_one_image(
         &out_dir.join("fused_original_hybrid_nothreshold.png"),
     )?;
 
-    // ── 加权聚类色：对原图做加权 k-means，FiltHybrid 为权重 ──
-    let (weighted_color, wc_score) = kmeans_weighted_color(
+    // ── 加权聚类色：对原图做加权 k-means，最终颜色聚类图为权重 ──
+    let (weighted_color, wc_score, cluster_diagnostics) = kmeans_weighted_color(
         &data.rgb,
-        &fused_hyb_filt,
+        &color_cluster_weight,
         w as usize,
         h as usize,
         &params.impression,
         false,
+        Some(&cluster_background_hint),
     );
+    let cluster_json = serde_json::to_string_pretty(&cluster_diagnostics)
+        .context("serialize cluster_diagnostics.json")?;
+    std::fs::write(out_dir.join("cluster_diagnostics.json"), cluster_json)
+        .context("write cluster_diagnostics.json")?;
     let wc_hex = format!(
         "#{:02x}{:02x}{:02x}",
         (weighted_color[0].clamp(0.0, 1.0) * 255.0) as u8,
         (weighted_color[1].clamp(0.0, 1.0) * 255.0) as u8,
         (weighted_color[2].clamp(0.0, 1.0) * 255.0) as u8,
     );
-    println!("    weighted cluster: {wc_hex} (score={wc_score:.0})");
+    println!("    weighted cluster: {wc_hex} (score={wc_score:.4})");
 
-    // ── 印象色：k-means++ 聚类，取过滤权重总和最高的簇 ──
+    // ── 印象色：k-means++ 聚类，取最终聚类权重总和最高的簇 ──
     let impression_color = kmeans_impression_color(
         &data.rgb,
-        &fused_hyb_filt,
+        &color_cluster_weight,
         w as usize,
         h as usize,
         &params.impression,
+        Some(&cluster_background_hint),
     );
     let k = params.impression.k;
     let max_iter = params.impression.max_iter;
@@ -726,6 +899,18 @@ fn process_one_image(
             ("segment_subject_confidence", &seg.subject_confidence),
         ]);
     }
+    feat_slices.extend_from_slice(&[
+        (
+            "background_impression_weight",
+            &background_impression_weight,
+        ),
+        (
+            "neutral_background_suppression",
+            &neutral_background_suppression,
+        ),
+        ("cluster_background_hint", &cluster_background_hint),
+        ("color_cluster_weight_final", &color_cluster_weight),
+    ]);
     let fused_slices: [(&str, &[f64]); 6] = [
         ("fused_add", &fused_add),
         ("fused_softmul", &fused_mul),

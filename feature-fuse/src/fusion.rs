@@ -2,7 +2,8 @@
 // Percentile Normalize + Hybrid Fusion + Filter
 // =============================================================================
 
-use crate::params::{FilterParams, ImpressionParams, Weights};
+use crate::params::{ClusterScoringParams, FilterParams, ImpressionParams, Weights};
+use serde::Serialize;
 
 /// Percentile 归一化到 [0,1]：低于 p_low% 置 0，高于 p_high% 置 1，中间线性拉伸
 pub fn percentile_normalize(data: &[f64], p_low: f64, p_high: f64) -> Vec<f64> {
@@ -216,23 +217,24 @@ fn sq_dist(a: &[f64; 3], b: &[f64; 3]) -> f64 {
     dx * dx + dy * dy + dz * dz
 }
 
-/// 使用加权 k-means++ 聚类从过滤后的显著像素中提取印象色。
+/// 使用加权 k-means++ 聚类从最终聚类权重图中提取印象色。
 ///
-/// `filtered` 既作为二值门控（>0 才参与聚类），其值本身也作为该像素的权重。
-/// 像素的 FiltHyb 值越高，对质心位置的牵引力越大。
+/// 权重图既作为二值门控（>0 才参与聚类），其值本身也作为该像素的权重。
+/// 像素权重越高，对质心位置的牵引力越大。
 ///
 /// 采样方式由 `impression.sample_method` 控制:
 ///   - "stride": 间隔规律网格采样，按 sample_stride 在 2D 网格上每隔 stride 个像素选一个
-///   - "all":    使用全部 filtered > 0 的像素（旧行为）
+///   - "all":    使用全部权重图 > 0 的像素
 ///
 /// k-means++ 初始化使用固定种子 `impression.seed`（默认 42），保证可复现。
-/// 簇得分 = count × mean_weight（等价于 weight_sum），得分最高的簇的质心作为印象色返回。
+/// 最终胜出簇由 `impression.cluster_scoring` 控制。
 pub fn kmeans_impression_color(
     rgb: &[[f64; 3]],
     filtered: &[f64],
     w: usize,
     h: usize,
     params: &ImpressionParams,
+    background_hint: Option<&[f64]>,
 ) -> [f64; 3] {
     let k = params.k;
     let max_iter = params.max_iter;
@@ -369,22 +371,49 @@ pub fn kmeans_impression_color(
         }
     }
 
-    // 加权得分：count × mean_weight，等价于簇内总权重，避免把簇大小平方化。
-    let mut counts = vec![0u32; k];
-    let mut weight_sums = vec![0.0f64; k];
-    for i in 0..n {
-        let c = assign[i];
-        counts[c] += 1;
-        weight_sums[c] += filtered[indices[i]];
-    }
-    let best = (0..k)
-        .max_by(|&a, &b| {
-            let sa = weight_sums[a];
-            let sb = weight_sums[b];
-            sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .unwrap();
+    let (best, _, _) = select_best_cluster(
+        &assign,
+        &indices,
+        &centroids,
+        filtered,
+        background_hint,
+        params,
+    );
     centroids[best]
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ClusterDiagnostics {
+    pub cluster_id: usize,
+    pub rgb: [f64; 3],
+    pub hex: String,
+    pub count: u32,
+    pub area_ratio: f64,
+    pub weight_sum: f64,
+    pub mean_weight: f64,
+    pub p90_weight: f64,
+    pub max_weight: f64,
+    pub saturation: f64,
+    pub background_mean: f64,
+    pub area_component: f64,
+    pub mean_weight_component: f64,
+    pub peak_weight_component: f64,
+    pub base_score: f64,
+    pub saturation_multiplier: f64,
+    pub neutral_penalty: f64,
+    pub background_penalty: f64,
+    pub min_area_gate: f64,
+    pub final_score: f64,
+    pub legacy_weight_sum_score: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ClusterScoringDiagnostics {
+    pub enabled: bool,
+    pub winner: usize,
+    pub winner_hex: String,
+    pub winner_score: f64,
+    pub clusters: Vec<ClusterDiagnostics>,
 }
 
 /// 加权聚类：对原图像素做 k-means，使用传入的融合图作为每像素权重。
@@ -393,7 +422,7 @@ pub fn kmeans_impression_color(
 ///   - 传入 raw hybrid 时所有权重大于 0 的像素参与；传入 FiltHybrid 时只保留过滤后的像素
 ///   - 每个像素的权重 = fusion map 值（可配是否先归一化）
 ///   - 聚类更新时使用加权质心
-///   - 输出「簇大小 × 平均权重」最大的簇的质心（而非纯粹像素数最多的簇）
+///   - 输出 `impression.cluster_scoring` 评分最高的簇的质心
 ///
 /// 采样方式由 `impression.sample_method` 控制（同印象色聚类）。
 pub fn kmeans_weighted_color(
@@ -403,7 +432,8 @@ pub fn kmeans_weighted_color(
     h: usize,
     params: &ImpressionParams,
     normalize_before: bool,
-) -> ([f64; 3], f64) {
+    background_hint: Option<&[f64]>,
+) -> ([f64; 3], f64, ClusterScoringDiagnostics) {
     let k = params.k;
     let max_iter = params.max_iter;
 
@@ -443,7 +473,11 @@ pub fn kmeans_weighted_color(
 
     let n = pts.len();
     if n == 0 {
-        return ([0.0; 3], 0.0);
+        return (
+            [0.0; 3],
+            0.0,
+            empty_cluster_diagnostics(params.cluster_scoring.enabled),
+        );
     }
     if n <= k {
         let mut s = [0.0; 3];
@@ -455,9 +489,19 @@ pub fn kmeans_weighted_color(
             w_sum += weights[i];
         }
         if w_sum > 0.0 {
-            return ([s[0] / w_sum, s[1] / w_sum, s[2] / w_sum], w_sum);
+            let color = [s[0] / w_sum, s[1] / w_sum, s[2] / w_sum];
+            return (
+                color,
+                w_sum,
+                fallback_cluster_diagnostics(color, n as u32, w_sum, params),
+            );
         }
-        return ([s[0] / n as f64, s[1] / n as f64, s[2] / n as f64], 0.0);
+        let color = [s[0] / n as f64, s[1] / n as f64, s[2] / n as f64];
+        return (
+            color,
+            0.0,
+            fallback_cluster_diagnostics(color, n as u32, 0.0, params),
+        );
     }
 
     // ── K-means++ 初始化 ──
@@ -544,24 +588,296 @@ pub fn kmeans_weighted_color(
         }
     }
 
-    // ── 计算每簇的「大小 × 平均权重」得分 ──
+    let (best, score, diagnostics) = select_best_cluster(
+        &assign,
+        &indices,
+        &centroids,
+        &weights,
+        background_hint,
+        params,
+    );
+    (centroids[best], score, diagnostics)
+}
+
+fn select_best_cluster(
+    assign: &[usize],
+    indices: &[usize],
+    centroids: &[[f64; 3]],
+    weights: &[f64],
+    background_hint: Option<&[f64]>,
+    params: &ImpressionParams,
+) -> (usize, f64, ClusterScoringDiagnostics) {
+    let k = centroids.len();
+    if k == 0 || assign.is_empty() {
+        let diag = empty_cluster_diagnostics(params.cluster_scoring.enabled);
+        return (0, 0.0, diag);
+    }
+
     let mut counts = vec![0u32; k];
     let mut weight_sums = vec![0.0f64; k];
-    for i in 0..n {
-        let c = assign[i];
-        counts[c] += 1;
-        weight_sums[c] += weights[indices[i]];
+    let mut max_weights = vec![0.0f64; k];
+    let mut bg_sums = vec![0.0f64; k];
+    let mut cluster_weights = vec![Vec::<f64>::new(); k];
+
+    for (sample_i, &cluster_id) in assign.iter().enumerate() {
+        if cluster_id >= k {
+            continue;
+        }
+        let idx = indices[sample_i];
+        let weight = weights.get(idx).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+        counts[cluster_id] += 1;
+        weight_sums[cluster_id] += weight;
+        max_weights[cluster_id] = max_weights[cluster_id].max(weight);
+        cluster_weights[cluster_id].push(weight);
+
+        if let Some(bg) = background_hint {
+            bg_sums[cluster_id] += bg.get(idx).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+        }
     }
-    // 得分 = 像素数 × 平均权重 = 总权重（权越大、簇越大 → 得分越高）
-    let best = (0..k)
-        .max_by(|&a, &b| {
-            let sa = weight_sums[a];
-            let sb = weight_sums[b];
-            sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+
+    let clusters: Vec<ClusterDiagnostics> = (0..k)
+        .map(|cluster_id| {
+            let count = counts[cluster_id];
+            let area_ratio = count as f64 / assign.len().max(1) as f64;
+            let weight_sum = weight_sums[cluster_id];
+            let mean_weight = if count > 0 {
+                weight_sum / count as f64
+            } else {
+                0.0
+            };
+            let p90_weight = percentile_from_values(&mut cluster_weights[cluster_id], 0.90);
+            let background_mean = if count > 0 {
+                bg_sums[cluster_id] / count as f64
+            } else {
+                0.0
+            };
+
+            score_cluster(
+                cluster_id,
+                centroids[cluster_id],
+                count,
+                area_ratio,
+                weight_sum,
+                mean_weight,
+                p90_weight,
+                max_weights[cluster_id],
+                background_mean,
+                &params.cluster_scoring,
+            )
         })
-        .unwrap();
-    let score = weight_sums[best];
-    (centroids[best], score)
+        .collect();
+
+    let winner = clusters
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| {
+            a.final_score
+                .partial_cmp(&b.final_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let winner_score = clusters[winner].final_score;
+    let winner_hex = clusters[winner].hex.clone();
+    let diagnostics = ClusterScoringDiagnostics {
+        enabled: params.cluster_scoring.enabled,
+        winner,
+        winner_hex,
+        winner_score,
+        clusters,
+    };
+
+    (winner, winner_score, diagnostics)
+}
+
+fn score_cluster(
+    cluster_id: usize,
+    rgb: [f64; 3],
+    count: u32,
+    area_ratio: f64,
+    weight_sum: f64,
+    mean_weight: f64,
+    p90_weight: f64,
+    max_weight: f64,
+    background_mean: f64,
+    cfg: &ClusterScoringParams,
+) -> ClusterDiagnostics {
+    let saturation = rgb_saturation(rgb);
+    let area_power = cfg.area_power.max(1e-6);
+    let mean_power = cfg.mean_weight_power.max(1e-6);
+    let peak_power = cfg.peak_weight_power.max(1e-6);
+
+    let area_component = area_ratio.clamp(0.0, 1.0).powf(area_power);
+    let mean_weight_component = mean_weight.clamp(0.0, 1.0).powf(mean_power);
+    let peak_weight_component = p90_weight.clamp(0.0, 1.0).powf(peak_power);
+
+    let base_score = if cfg.enabled {
+        weighted_average3(
+            area_component,
+            cfg.area_weight,
+            mean_weight_component,
+            cfg.mean_weight_weight,
+            peak_weight_component,
+            cfg.peak_weight_weight,
+        )
+    } else {
+        weight_sum
+    };
+
+    let saturation_multiplier = if cfg.enabled {
+        1.0 + cfg.saturation_bonus.max(0.0) * saturation
+    } else {
+        1.0
+    };
+
+    let low_sat =
+        1.0 - smoothstep(cfg.neutral_sat_threshold, cfg.neutral_sat_threshold + 0.10, saturation);
+    let neutral_area_gate = smoothstep(
+        cfg.neutral_min_area_ratio,
+        cfg.neutral_full_area_ratio,
+        area_ratio,
+    );
+    let neutral_penalty = if cfg.enabled {
+        (1.0 - cfg.neutral_penalty_strength.clamp(0.0, 1.0) * low_sat * neutral_area_gate)
+            .clamp(0.02, 1.0)
+    } else {
+        1.0
+    };
+
+    let background_penalty = if cfg.enabled {
+        let vivid_relax = 1.0 - 0.65 * saturation.clamp(0.0, 1.0);
+        (1.0
+            - cfg.background_penalty_strength.clamp(0.0, 1.0)
+                * background_mean.clamp(0.0, 1.0)
+                * vivid_relax)
+            .clamp(0.05, 1.0)
+    } else {
+        1.0
+    };
+
+    let min_area_gate = if cfg.enabled && cfg.min_cluster_area_ratio > 0.0 {
+        smoothstep(
+            cfg.min_cluster_area_ratio * 0.5,
+            cfg.min_cluster_area_ratio,
+            area_ratio,
+        )
+    } else {
+        1.0
+    };
+
+    let final_score = if cfg.enabled {
+        base_score * saturation_multiplier * neutral_penalty * background_penalty * min_area_gate
+    } else {
+        weight_sum
+    };
+
+    ClusterDiagnostics {
+        cluster_id,
+        rgb,
+        hex: rgb_to_hex(rgb),
+        count,
+        area_ratio,
+        weight_sum,
+        mean_weight,
+        p90_weight,
+        max_weight,
+        saturation,
+        background_mean,
+        area_component,
+        mean_weight_component,
+        peak_weight_component,
+        base_score,
+        saturation_multiplier,
+        neutral_penalty,
+        background_penalty,
+        min_area_gate,
+        final_score,
+        legacy_weight_sum_score: weight_sum,
+    }
+}
+
+fn empty_cluster_diagnostics(enabled: bool) -> ClusterScoringDiagnostics {
+    ClusterScoringDiagnostics {
+        enabled,
+        winner: 0,
+        winner_hex: "#000000".to_string(),
+        winner_score: 0.0,
+        clusters: Vec::new(),
+    }
+}
+
+fn fallback_cluster_diagnostics(
+    color: [f64; 3],
+    count: u32,
+    score: f64,
+    params: &ImpressionParams,
+) -> ClusterScoringDiagnostics {
+    let cluster = score_cluster(
+        0,
+        color,
+        count,
+        1.0,
+        score,
+        if count > 0 { score / count as f64 } else { 0.0 },
+        if count > 0 { score / count as f64 } else { 0.0 },
+        if count > 0 { score / count as f64 } else { 0.0 },
+        0.0,
+        &params.cluster_scoring,
+    );
+    ClusterScoringDiagnostics {
+        enabled: params.cluster_scoring.enabled,
+        winner: 0,
+        winner_hex: cluster.hex.clone(),
+        winner_score: cluster.final_score,
+        clusters: vec![cluster],
+    }
+}
+
+fn percentile_from_values(values: &mut [f64], q: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Less));
+    let idx = ((values.len() - 1) as f64 * q.clamp(0.0, 1.0)).round() as usize;
+    values[idx.min(values.len() - 1)]
+}
+
+fn weighted_average3(a: f64, aw: f64, b: f64, bw: f64, c: f64, cw: f64) -> f64 {
+    let aw = aw.max(0.0);
+    let bw = bw.max(0.0);
+    let cw = cw.max(0.0);
+    let total = aw + bw + cw;
+    if total <= 1e-12 {
+        return (a + b + c) / 3.0;
+    }
+    (a * aw + b * bw + c * cw) / total
+}
+
+fn rgb_saturation(rgb: [f64; 3]) -> f64 {
+    let max_c = rgb[0].max(rgb[1]).max(rgb[2]);
+    let min_c = rgb[0].min(rgb[1]).min(rgb[2]);
+    if max_c <= 1e-12 {
+        0.0
+    } else {
+        ((max_c - min_c) / max_c).clamp(0.0, 1.0)
+    }
+}
+
+fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
+    if (edge1 - edge0).abs() < 1e-12 {
+        return if x >= edge1 { 1.0 } else { 0.0 };
+    }
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn rgb_to_hex(rgb: [f64; 3]) -> String {
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        (rgb[0].clamp(0.0, 1.0) * 255.0) as u8,
+        (rgb[1].clamp(0.0, 1.0) * 255.0) as u8,
+        (rgb[2].clamp(0.0, 1.0) * 255.0) as u8
+    )
 }
 
 // =============================================================================

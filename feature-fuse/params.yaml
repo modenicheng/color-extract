@@ -217,7 +217,7 @@ weights_mul:
   local_lab_b: 0.01
   local_sat: 0.00
   background_mask_morph: 0.00
-  background_fg_confidence: 0.07
+  background_fg_confidence: 0.17
   subject_prior: 0.00
   abs_light: 0.00
   abs_lab_a: 0.06
@@ -244,6 +244,35 @@ direct_blend:
   normalize_before: true
 
 # ═════════════════════════════════════════════════════════════════════════════
+# 6b. Impression Background — 颜色聚类专用的背景氛围回流
+#     只影响 weighted cluster / impression color，不改写背景图和 Fuse 图。
+# ═════════════════════════════════════════════════════════════════════════════
+impression_background:
+  enabled: true
+  # 背景 ambient 通道整体强度。调大→大面积背景更能影响最终主色。
+  strength: 0.10
+  # 相似背景色块的有效累计面积达到 min 后开始回流，达到 full 后面积权重为 1。
+  min_area_ratio: 0.26
+  full_area_ratio: 0.85
+  # 低于该饱和度的背景回流会被压低，避免灰/白/黑铺底过度代表主色。
+  min_saturation: 0.08
+  colorfulness_weight: 0.65
+  tone_harmony_weight: 0.25
+  stability_weight: 0.01
+  # 单像素 ambient 权重上限，避免背景覆盖主体权重。
+  max_weight: 0.30
+  # 黑/白/灰大背景的最终聚类权重惩罚。只影响 color_cluster_weight_final。
+  neutral_suppression_enabled: true
+  neutral_suppression_strength: 0.95
+  neutral_sat_threshold: 0.12
+  neutral_black_l_threshold: 18.0
+  neutral_white_l_threshold: 87.0
+  neutral_light_softness: 10.0
+  neutral_bg_probability_threshold: 0.45
+  neutral_min_effective_area_ratio: 0.05
+  neutral_full_effective_area_ratio: 0.25
+
+# ═════════════════════════════════════════════════════════════════════════════
 # 7. 最终过滤（threshold / quantile 互斥）
 # ═════════════════════════════════════════════════════════════════════════════
 filter:
@@ -255,7 +284,7 @@ filter:
   # post_normalize 输出下限：0 表示拉到 [0,1]，0.2 表示保留区域拉到 [0.2,1]。
   post_normalize_min: 0.0
   # 归一化后的 gamma 曲线：<1 放大弱响应，>1 压低弱响应，1 不改变。
-  post_normalize_gamma: 1.5
+  post_normalize_gamma: 1.2
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 8. Contact Sheet 排版（仅影响输出，不影响计算）
@@ -292,11 +321,28 @@ spectral_residual:
 #     sample_method: stride(间隔采样) | all(全像素)
 # ═════════════════════════════════════════════════════════════════════════════
 impression:
-  k: 4
+  k: 8
   max_iter: 10
   sample_method: stride
   sample_stride: 2
   seed: 42
+  # 簇级胜出评分：K-Means 仍负责按 RGB 分色，这里只决定最终选哪个簇。
+  # area_power < 1 会压缩面积优势，避免白底/黑底/大面积浅色残留凭总权重胜出。
+  cluster_scoring:
+    enabled: true
+    area_power: 0.45
+    mean_weight_power: 1.0
+    peak_weight_power: 0.80
+    area_weight: 0.45
+    mean_weight_weight: 0.35
+    peak_weight_weight: 0.20
+    saturation_bonus: 0.25
+    neutral_penalty_strength: 0.75
+    neutral_sat_threshold: 0.16
+    neutral_min_area_ratio: 0.08
+    neutral_full_area_ratio: 0.35
+    background_penalty_strength: 0.35
+    min_cluster_area_ratio: 0.002
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 12. 动态特征权重 — 按特征自身统计量（方差/范围/峰度）动态调整 multiplier
@@ -356,4 +402,4 @@ dynamic_weights:
     abs_sat:
       enabled: true
     segment_foreground:
-      enabled: true  # 背景相关不加动态权重
+      enabled: false  # 背景相关不加动态权重

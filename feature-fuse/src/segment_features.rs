@@ -8,7 +8,10 @@ use image::{Rgb, RgbImage};
 use serde::Serialize;
 
 use crate::background::BackgroundFeatureInputs;
-use crate::params::{RegionDynamicWeightsParams, RegionScoringParams, SegmentFusionParams};
+use crate::params::{
+    ImpressionBackgroundParams, RegionDynamicWeightsParams, RegionScoringParams,
+    SegmentFusionParams,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RegionFeature {
@@ -160,6 +163,211 @@ pub fn apply_segment_foreground_prior(
             (fg * (1.0 - strength) + seg_fg * strength).clamp(0.0, 1.0)
         })
         .collect()
+}
+
+/// 为最终颜色聚类生成背景氛围权重。
+///
+/// 这个权重不改变背景/前景判定本身，只让“大面积、稳定、有明确色调且与整体画面协调”的背景
+/// 在最终印象色聚类中保留一部分发言权。
+pub fn compute_background_impression_weight(
+    segment: Option<&SegmentFeatureResult>,
+    cfg: &ImpressionBackgroundParams,
+    n_pixels: usize,
+) -> Vec<f64> {
+    if !cfg.enabled || cfg.strength <= 0.0 || n_pixels == 0 {
+        return vec![0.0; n_pixels];
+    }
+    let Some(segment) = segment else {
+        return vec![0.0; n_pixels];
+    };
+    if segment.regions.is_empty() {
+        return vec![0.0; n_pixels];
+    }
+
+    let global_tone = weighted_region_tone(&segment.regions, |region| region.area as f64)
+        .unwrap_or([0.0, 0.0, 0.0]);
+    let bg_tone = weighted_region_tone(&segment.regions, |region| {
+        region.area as f64 * region.bg_probability.clamp(0.0, 1.0)
+    })
+    .unwrap_or(global_tone);
+
+    let component_total = cfg.colorfulness_weight.max(0.0)
+        + cfg.tone_harmony_weight.max(0.0)
+        + cfg.stability_weight.max(0.0);
+    let max_weight = cfg.max_weight.clamp(0.0, 1.0);
+    let strength = cfg.strength.max(0.0);
+    let effective_bg_areas = effective_background_areas(&segment.regions);
+
+    let region_weights: Vec<f64> = segment
+        .regions
+        .iter()
+        .enumerate()
+        .map(|(idx, region)| {
+            let effective_area = region
+                .area_ratio
+                .max(effective_bg_areas.get(idx).copied().unwrap_or(0.0));
+            let area_gate = smoothstep(
+                cfg.min_area_ratio.clamp(0.0, 1.0),
+                cfg.full_area_ratio.clamp(0.0, 1.0),
+                effective_area,
+            );
+            let colorfulness = if cfg.min_saturation <= 1e-9 {
+                1.0
+            } else {
+                smoothstep(0.0, cfg.min_saturation.clamp(1e-6, 1.0), region.mean_saturation)
+            };
+            let tone_harmony = rgb_tone_affinity(region.mean_rgb, global_tone)
+                .max(rgb_tone_affinity(region.mean_rgb, bg_tone));
+            let stability = region.color_stability.clamp(0.0, 1.0);
+            let quality = if component_total <= 1e-12 {
+                1.0
+            } else {
+                (colorfulness * cfg.colorfulness_weight.max(0.0)
+                    + tone_harmony * cfg.tone_harmony_weight.max(0.0)
+                    + stability * cfg.stability_weight.max(0.0))
+                    / component_total
+            };
+
+            let non_subject = (1.0 - region.subject_confidence).clamp(0.0, 1.0);
+            (strength
+                * region.bg_probability.clamp(0.0, 1.0)
+                * area_gate
+                * quality.clamp(0.0, 1.0)
+                * non_subject)
+                .clamp(0.0, max_weight)
+        })
+        .collect();
+
+    let mut out: Vec<f64> = segment
+        .labels
+        .iter()
+        .take(n_pixels)
+        .map(|label| match label {
+            Some(rid) if *rid < region_weights.len() => region_weights[*rid],
+            _ => 0.0,
+        })
+        .collect();
+    out.resize(n_pixels, 0.0);
+    out
+}
+
+/// 计算大面积黑/白/灰背景的聚类权重惩罚。
+///
+/// 只在「像背景 + 低饱和 + 近黑/近白 + 相似背景累计面积大」同时成立时生效，
+/// 用于避免白底/黑底图片的最终主色被画布本身吞掉。
+pub fn compute_neutral_background_suppression(
+    segment: Option<&SegmentFeatureResult>,
+    lab_l: &[f64],
+    cfg: &ImpressionBackgroundParams,
+    n_pixels: usize,
+) -> Vec<f64> {
+    if !cfg.neutral_suppression_enabled
+        || cfg.neutral_suppression_strength <= 0.0
+        || n_pixels == 0
+    {
+        return vec![0.0; n_pixels];
+    }
+    let Some(segment) = segment else {
+        return vec![0.0; n_pixels];
+    };
+    if segment.regions.is_empty() {
+        return vec![0.0; n_pixels];
+    }
+
+    let effective_bg_areas = effective_background_areas(&segment.regions);
+    let strength = cfg.neutral_suppression_strength.clamp(0.0, 1.0);
+    let sat_threshold = cfg.neutral_sat_threshold.clamp(1e-6, 1.0);
+    let bg_threshold = cfg.neutral_bg_probability_threshold.clamp(0.0, 1.0);
+    let bg_full = (bg_threshold + 0.25).min(1.0);
+    let sat_fade_end = (sat_threshold + 0.10).min(1.0);
+    let region_penalties: Vec<f64> = segment
+        .regions
+        .iter()
+        .enumerate()
+        .map(|(idx, region)| {
+            let effective_area = region
+                .area_ratio
+                .max(effective_bg_areas.get(idx).copied().unwrap_or(0.0));
+            let area_gate = smoothstep(
+                cfg.neutral_min_effective_area_ratio.clamp(0.0, 1.0),
+                cfg.neutral_full_effective_area_ratio.clamp(0.0, 1.0),
+                effective_area,
+            );
+            let bg_gate = smoothstep(bg_threshold, bg_full, region.bg_probability);
+            let low_sat = 1.0 - smoothstep(sat_threshold, sat_fade_end, region.mean_saturation);
+            let non_subject = smoothstep(0.20, 0.55, 1.0 - region.subject_confidence);
+            strength * area_gate * bg_gate * low_sat * non_subject
+        })
+        .collect();
+
+    // ── 诊断：region 级 penalty 分解 ──
+    {
+        let mut nonzero_penalties: Vec<(usize, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64)> = Vec::new();
+        for (idx, region) in segment.regions.iter().enumerate() {
+            let rp = region_penalties[idx];
+            if rp > 0.001 {
+                let effective_area = region
+                    .area_ratio
+                    .max(effective_bg_areas.get(idx).copied().unwrap_or(0.0));
+                let area_gate = smoothstep(
+                    cfg.neutral_min_effective_area_ratio.clamp(0.0, 1.0),
+                    cfg.neutral_full_effective_area_ratio.clamp(0.0, 1.0),
+                    effective_area,
+                );
+                let bg_gate = smoothstep(bg_threshold, bg_full, region.bg_probability);
+                let low_sat = 1.0 - smoothstep(sat_threshold, sat_fade_end, region.mean_saturation);
+                let non_subject = smoothstep(0.20, 0.55, 1.0 - region.subject_confidence);
+                nonzero_penalties.push((
+                    idx, region.area_ratio, effective_area, area_gate,
+                    region.bg_probability, bg_gate,
+                    region.mean_saturation, low_sat,
+                    region.subject_confidence, non_subject, rp,
+                ));
+            }
+        }
+        nonzero_penalties.sort_by(|a, b| b.10.partial_cmp(&a.10).unwrap_or(std::cmp::Ordering::Equal));
+        eprintln!(
+            "  [diag] region_penalties>0.001: {}/{} regions",
+            nonzero_penalties.len(),
+            segment.regions.len(),
+        );
+        for (idx, area, eff_area, a_gate, bg_prob, b_gate, sat, l_sat, subj, n_subj, rp)
+            in nonzero_penalties.iter().take(12)
+        {
+            eprintln!(
+                "    r[{idx:>3}]: area={area:.4} eff={eff_area:.4} a_gate={a_gate:.4} | bg={bg_prob:.4} b_gate={b_gate:.4} | sat={sat:.4} l_sat={l_sat:.4} | subj={subj:.4} n_subj={n_subj:.4} → penalty={rp:.4}",
+            );
+        }
+    }
+
+    let softness = cfg.neutral_light_softness.max(1e-6);
+    let black_edge0 = cfg.neutral_black_l_threshold;
+    let black_edge1 = cfg.neutral_black_l_threshold + softness;
+    let white_edge0 = cfg.neutral_white_l_threshold - softness;
+    let white_edge1 = cfg.neutral_white_l_threshold;
+
+    let mut out: Vec<f64> = segment
+        .labels
+        .iter()
+        .take(n_pixels)
+        .enumerate()
+        .map(|(idx, label)| {
+            let region_penalty = match label {
+                Some(rid) if *rid < region_penalties.len() => region_penalties[*rid],
+                _ => 0.0,
+            };
+            if region_penalty <= 0.0 {
+                return 0.0;
+            }
+            let l = lab_l.get(idx).copied().unwrap_or(50.0);
+            let black = 1.0 - smoothstep(black_edge0, black_edge1, l);
+            let white = smoothstep(white_edge0, white_edge1, l);
+            let extreme_light = black.max(white).clamp(0.0, 1.0);
+            (region_penalty * extreme_light).clamp(0.0, 1.0)
+        })
+        .collect();
+    out.resize(n_pixels, 0.0);
+    out
 }
 
 fn build_segment_foreground(bg_probability: &[f64], subject_confidence: &[f64]) -> Vec<f64> {
@@ -482,6 +690,54 @@ fn circular_hue_affinity(hue: f64, center: f64, width: f64) -> f64 {
     let d = (hue - center).rem_euclid(360.0);
     let dist = d.min(360.0 - d);
     (1.0 - dist / width).clamp(0.0, 1.0)
+}
+
+fn weighted_region_tone<F>(regions: &[RegionFeature], weight: F) -> Option<[f64; 3]>
+where
+    F: Fn(&RegionFeature) -> f64,
+{
+    let mut sum = [0.0; 3];
+    let mut total = 0.0;
+    for region in regions {
+        let w = weight(region).max(0.0);
+        if w <= 0.0 {
+            continue;
+        }
+        sum[0] += region.mean_rgb[0] * w;
+        sum[1] += region.mean_rgb[1] * w;
+        sum[2] += region.mean_rgb[2] * w;
+        total += w;
+    }
+    if total <= 1e-12 {
+        None
+    } else {
+        Some([sum[0] / total, sum[1] / total, sum[2] / total])
+    }
+}
+
+fn effective_background_areas(regions: &[RegionFeature]) -> Vec<f64> {
+    regions
+        .iter()
+        .map(|region| {
+            regions
+                .iter()
+                .map(|other| {
+                    other.area_ratio
+                        * other.bg_probability.clamp(0.0, 1.0)
+                        * rgb_tone_affinity(region.mean_rgb, other.mean_rgb)
+                })
+                .sum::<f64>()
+                .clamp(0.0, 1.0)
+        })
+        .collect()
+}
+
+fn rgb_tone_affinity(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let dr = a[0] - b[0];
+    let dg = a[1] - b[1];
+    let db = a[2] - b[2];
+    let dist = ((dr * dr + dg * dg + db * db) / 3.0).sqrt();
+    (-(dist / 0.32).powi(2)).exp().clamp(0.0, 1.0)
 }
 
 fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {

@@ -12,7 +12,7 @@ pub struct ImageEntry {
     pub rc_hex: String,
 }
 
-/// 生成 HTML 总览页：每行展示 resized 原图、Filt Hybr、印象色和 contact sheet。
+/// 生成 HTML 总览页：每行展示关键权重图、印象色和 contact sheet。
 pub fn generate_overview(entries: &[ImageEntry], output_path: &std::path::Path) -> Result<()> {
     let mut html = String::with_capacity(64_000);
     write_header(&mut html);
@@ -65,20 +65,21 @@ header .stats {
 table {
     width: 100%;
     border-collapse: collapse;
+    table-layout: fixed;
 }
 th {
     font-size: 0.7rem;
     color: var(--text-dim);
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    padding: 6px 8px;
+    padding: 6px;
     border-bottom: 1px solid var(--border);
     text-align: left;
     white-space: nowrap;
 }
-th.img-col { width: 28%; }
+th.img-col { width: auto; }
 td {
-    padding: 4px 8px;
+    padding: 4px 6px;
     border-bottom: 1px solid rgba(42, 42, 74, 0.5);
     vertical-align: middle;
 }
@@ -91,7 +92,7 @@ tr:hover { background: rgba(108, 99, 255, 0.05); }
     max-width: 160px;
 }
 .thumb {
-    max-height: 100px;
+    max-height: 82px;
     max-width: 100%;
     border-radius: 4px;
     border: 1px solid var(--border);
@@ -139,7 +140,7 @@ fn write_body(html: &mut String, entries: &[ImageEntry]) {
     html.push_str("<header>\n");
     html.push_str("<h1>Feature-Fuse Overview</h1>\n");
     html.push_str(&format!(
-        "<div class=\"stats\">{} images - Resized / Filt Hybrid / Impression Color / Region Color / Contact Sheet</div>\n",
+        "<div class=\"stats\">{} images - Resized / Filt Hybrid / BG Amb / BG Neu / Cl BG / Clust W / Impression / Region / Sheet</div>\n",
         entries.len()
     ));
     html.push_str("</header>\n");
@@ -150,6 +151,10 @@ fn write_body(html: &mut String, entries: &[ImageEntry]) {
         <th>Image</th>\
         <th class=\"img-col\">Resized</th>\
         <th class=\"img-col\">Filt Hybr</th>\
+        <th class=\"img-col\">BG Amb</th>\
+        <th class=\"img-col\">BG Neu</th>\
+        <th class=\"img-col\">Cl BG</th>\
+        <th class=\"img-col\">Clust W</th>\
         <th>Impression</th>\
         <th>Region</th>\
         <th>Sheet</th>\
@@ -170,6 +175,26 @@ fn write_body(html: &mut String, entries: &[ImageEntry]) {
         ));
         html.push_str(&format!(
             "<td><img class=\"thumb\" src=\"{}/fused_hybrid_filtered.png\" alt=\"{} filtered hybrid\"></td>\n",
+            escape_attr(&e.stem),
+            escape_attr(&e.stem)
+        ));
+        html.push_str(&format!(
+            "<td><img class=\"thumb\" src=\"{}/background_impression_weight.png\" alt=\"{} background ambient\"></td>\n",
+            escape_attr(&e.stem),
+            escape_attr(&e.stem)
+        ));
+        html.push_str(&format!(
+            "<td><img class=\"thumb\" src=\"{}/neutral_background_suppression.png\" alt=\"{} neutral background suppression\"></td>\n",
+            escape_attr(&e.stem),
+            escape_attr(&e.stem)
+        ));
+        html.push_str(&format!(
+            "<td><img class=\"thumb\" src=\"{}/cluster_background_hint.png\" alt=\"{} cluster background hint\"></td>\n",
+            escape_attr(&e.stem),
+            escape_attr(&e.stem)
+        ));
+        html.push_str(&format!(
+            "<td><img class=\"thumb\" src=\"{}/color_cluster_weight_final.png\" alt=\"{} final cluster weight\"></td>\n",
             escape_attr(&e.stem),
             escape_attr(&e.stem)
         ));
