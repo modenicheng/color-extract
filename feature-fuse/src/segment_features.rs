@@ -625,34 +625,79 @@ fn build_region_feature(
 
 fn compute_region_color_scores(regions: &mut [RegionFeature], cfg: &RegionScoringParams) {
     for region in regions {
-        let area_factor = region.area_ratio.max(1e-9).powf(cfg.area_power.max(0.05));
-        let saliency = (region.saliency_mean * 0.70 + region.saliency_peak * 0.30).clamp(0.0, 1.0);
-        let large_area = smoothstep(
+        let area_component = region
+            .area_ratio
+            .clamp(0.0, 1.0)
+            .max(1e-9)
+            .powf(cfg.area_power.max(0.05));
+        let foreground = (1.0 - region.bg_probability).clamp(0.0, 1.0);
+        let saliency_mean = region.saliency_mean.clamp(0.0, 1.0);
+        let saliency_peak = region.saliency_peak.clamp(0.0, 1.0);
+        let saliency = (saliency_mean * 0.60 + saliency_peak * 0.40).clamp(0.0, 1.0);
+        let neutral_area_gate = smoothstep(
             cfg.bg_flat_area_min_ratio,
             cfg.bg_flat_area_full_ratio,
             region.area_ratio,
         );
-        let low_sat =
-            (1.0 - region.mean_saturation / cfg.bg_flat_sat_threshold.max(1e-6)).clamp(0.0, 1.0);
+        let low_sat = 1.0
+            - smoothstep(
+                cfg.bg_flat_sat_threshold,
+                cfg.bg_flat_sat_threshold + 0.10,
+                region.mean_saturation,
+            );
         let high_sat = ((region.mean_saturation - cfg.vivid_rg_sat_threshold)
             / (1.0 - cfg.vivid_rg_sat_threshold).max(1e-6))
         .clamp(0.0, 1.0);
-        let background_penalty = (large_area * region.color_stability * low_sat).clamp(0.0, 1.0);
-        let vivid_rg_bonus = (large_area * high_sat * region.red_green_affinity).clamp(0.0, 1.0);
-        let base = area_factor
-            * region.subject_confidence
-            * saliency.max(0.05)
-            * (1.0 - region.bg_probability).clamp(0.0, 1.0);
+        let background_penalty =
+            (neutral_area_gate * region.color_stability * low_sat).clamp(0.0, 1.0);
+        let vivid_rg_bonus =
+            (neutral_area_gate * high_sat * region.red_green_affinity).clamp(0.0, 1.0);
+
+        let base = weighted_components(&[
+            (area_component, cfg.region_area_weight),
+            (region.subject_confidence, cfg.region_subject_weight),
+            (saliency_mean, cfg.region_saliency_mean_weight),
+            (saliency_peak, cfg.region_saliency_peak_weight),
+            (foreground, cfg.region_foreground_weight),
+            (region.center_prior, cfg.region_center_weight),
+            (region.mean_saturation, cfg.region_saturation_weight),
+        ]);
         let stability_factor =
             1.0 - cfg.color_stability_weight + cfg.color_stability_weight * region.color_stability;
-        let penalty_factor =
-            1.0 - cfg.bg_flat_penalty_strength.clamp(0.0, 1.0) * background_penalty;
+        let neutral_penalty =
+            (1.0 - cfg.bg_flat_penalty_strength.clamp(0.0, 1.0) * background_penalty)
+                .clamp(0.02, 1.0);
+        let vivid_relax = 1.0 - 0.65 * region.mean_saturation.clamp(0.0, 1.0);
+        let bg_probability_penalty = (1.0
+            - cfg.bg_probability_penalty_strength.clamp(0.0, 1.0)
+                * region.bg_probability.clamp(0.0, 1.0)
+                * vivid_relax)
+            .clamp(0.05, 1.0);
+        let subject_prominence_bonus = 1.0
+            + cfg.subject_prominence_bonus_strength.max(0.0)
+                * region.subject_confidence.clamp(0.0, 1.0)
+                * saliency.max(0.05);
         let bonus_factor = 1.0 + cfg.vivid_rg_bonus_strength.max(0.0) * vivid_rg_bonus;
+        let min_area_gate = if cfg.min_region_area_ratio > 0.0 {
+            smoothstep(
+                cfg.min_region_area_ratio * 0.5,
+                cfg.min_region_area_ratio,
+                region.area_ratio,
+            )
+        } else {
+            1.0
+        };
 
         region.background_penalty = background_penalty;
         region.vivid_rg_bonus = vivid_rg_bonus;
-        region.color_score =
-            (base * stability_factor * penalty_factor * bonus_factor).max(0.0);
+        region.color_score = (base
+            * stability_factor
+            * neutral_penalty
+            * bg_probability_penalty
+            * subject_prominence_bonus
+            * bonus_factor
+            * min_area_gate)
+            .max(0.0);
     }
 }
 
@@ -712,6 +757,24 @@ where
         None
     } else {
         Some([sum[0] / total, sum[1] / total, sum[2] / total])
+    }
+}
+
+fn weighted_components(components: &[(f64, f64)]) -> f64 {
+    let mut sum = 0.0;
+    let mut total = 0.0;
+    for &(value, weight) in components {
+        let w = weight.max(0.0);
+        if w <= 0.0 {
+            continue;
+        }
+        sum += value.clamp(0.0, 1.0) * w;
+        total += w;
+    }
+    if total <= 1e-12 {
+        0.0
+    } else {
+        (sum / total).clamp(0.0, 1.0)
     }
 }
 

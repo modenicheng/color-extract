@@ -554,24 +554,60 @@ morphology 后的软保护强度: `bg_mask *= 1 - strength * foreground_protect`
 | `area_power` | 0.55 | ↑ 大面积区域在 color_score 中的权重被指数放大。1.0 → 面积与权重成正比；0.5 → 压缩面积差异 |
 | `color_stability_weight` | 0.30 | ↑ 颜色均匀的区域 color_score 更高（压制杂色块）。0 → 只看面积不看均匀度；1 → 均匀度完全支配 |
 
-#### 平铺背景惩罚 & 鲜艳红绿奖励
+#### region color Top-1 评分
 
-`region color` 的 Top-1 排名现在额外乘上两个区域色彩因子:
+`region color` 是汇总图第三个色块。它仍然不做多区域混合，而是直接选择 `color_score` 最高的单个区域均色。当前评分由“主体突出组件加权”再乘多个修正因子:
 
-- **背景惩罚**: 大面积 × 低方差/高稳定度 × 低饱和度。用于压制大块灰白、黑白、低饱和平铺背景。
-- **红绿奖励**: 大面积 × 高饱和度 × 色相接近红/绿。用于轻微保护大块鲜艳红色/绿色主题色。
+```text
+base =
+  weighted_mean(
+    area_ratio^area_power,
+    subject_confidence,
+    saliency_mean,
+    saliency_peak,
+    1 - bg_probability,
+    center_prior,
+    mean_saturation
+  )
+
+color_score =
+  base
+  × color_stability_factor
+  × neutral_background_penalty
+  × bg_probability_penalty
+  × subject_prominence_bonus
+  × vivid_red_green_bonus
+  × min_region_area_gate
+```
+
+目标是让第三色块尽可能来自“主体中最突出的那一部分颜色”，而不是被白底、黑底、灰底或超大面积低饱和区域夺走。
 
 | 参数 | 默认 | 效果 |
 |------|------|------|
+| `region_area_weight` | 0.18 | ↑ 面积组件更重要。调大后大色块更容易胜出；调小后更偏局部显著色 |
+| `region_subject_weight` | 0.28 | ↑ `subject_confidence` 更重要，更偏主体区域 |
+| `region_saliency_mean_weight` | 0.18 | ↑ 区域平均显著度更重要，适合稳定高响应主体块 |
+| `region_saliency_peak_weight` | 0.20 | ↑ 区域峰值显著度更重要，适合小但非常突出的颜色 |
+| `region_foreground_weight` | 0.20 | ↑ `1 - bg_probability` 更重要，更排斥 segment 判定的背景 |
+| `region_center_weight` | 0.08 | ↑ 中心 prior 更重要；主体偏边缘时不要设太高 |
+| `region_saturation_weight` | 0.12 | ↑ 饱和色更容易胜出；白/黑/灰背景误选多时可适当调大 |
+| `bg_probability_penalty_strength` | 0.45 | ↑ segment 背景概率对最终 region color 的惩罚更强；高饱和区域会被自动放松惩罚 |
 | `bg_flat_penalty_strength` | 0.55 | ↑ 更强烈惩罚大面积、低方差、低饱和区域。0 = 禁用该惩罚 |
 | `bg_flat_area_min_ratio` | 0.08 | 区域面积超过该比例后开始触发平铺背景惩罚 |
 | `bg_flat_area_full_ratio` | 0.35 | 区域面积超过该比例后平铺背景惩罚满额触发 |
 | `bg_flat_sat_threshold` | 0.28 | 饱和度低于该阈值时进入低饱和惩罚，越大越容易惩罚淡色块 |
+| `subject_prominence_bonus_strength` | 0.20 | ↑ 对 `subject_confidence × saliency` 高的区域给额外奖励，帮助选主体中最突出的局部 |
+| `min_region_area_ratio` | 0.0015 | 极小区域软门控阈值，避免单点噪声成为第三色块 |
 | `vivid_rg_bonus_strength` | 0.12 | ↑ 更明显奖励大面积鲜艳红/绿色块；建议保持较小，避免红绿背景误伤 |
 | `vivid_rg_sat_threshold` | 0.45 | 饱和度高于该阈值后开始触发红绿奖励 |
 | `vivid_rg_hue_width` | 38.0 | 红/绿色相容忍宽度，单位度。越大越容易把橙红、黄绿也纳入奖励 |
 
-最终 `region color` 不做多区域加权混合，而是直接采用 `color_score` 最高的单个区域均色。
+调参建议:
+
+- 第三色块仍然被白底/黑底拿走: 提高 `bg_flat_penalty_strength`、`bg_probability_penalty_strength` 或 `region_saturation_weight`
+- 第三色块总是选到主体边缘线稿/噪声: 提高 `min_region_area_ratio`，降低 `region_saliency_peak_weight`
+- 第三色块太偏大面积衣服/背景，漏掉局部高亮主色: 降低 `region_area_weight` 或 `area_power`，提高 `region_saliency_peak_weight`
+- 主体触边时第三色块被排斥: 降低 `bg_probability_penalty_strength`，提高 `region_subject_weight`
 
 ---
 
@@ -778,12 +814,13 @@ final_score = base_score
             × saturation_multiplier
             × neutral_penalty
             × background_penalty
+            × skin_penalty
             × min_area_gate
 ```
 
-其中 `area_power < 1` 会压缩面积优势；`p90_weight` 让小面积高响应色块有机会胜出；`neutral_penalty` 用于压低低饱和大面积簇；`background_penalty` 来自 `cluster_background_hint.png`，但会对高饱和簇放松惩罚，避免有色背景完全失声。
+其中 `area_power < 1` 会压缩面积优势；`p90_weight` 让小面积高响应色块有机会胜出；`neutral_penalty` 用于压低低饱和大面积簇；`background_penalty` 来自 `cluster_background_hint.png`，但会对高饱和簇放松惩罚，避免有色背景完全失声；`skin_penalty` 基于 RGB 色序 R>G>B（偏红暖色调）检测肤色簇，施加惩罚防止肤色成为印象色。
 
-每张图会额外输出 `cluster_diagnostics.json`，包含每个簇的 `hex`、`area_ratio`、`mean_weight`、`p90_weight`、`saturation`、`background_mean`、各乘子和 `final_score`，用于解释最终为什么选中某个颜色。
+每张图会额外输出 `cluster_diagnostics.json`，包含每个簇的 `hex`、`area_ratio`、`mean_weight`、`p90_weight`、`saturation`、`background_mean`、`skin_likeness`、各乘子和 `final_score`，用于解释最终为什么选中某个颜色。
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
@@ -801,6 +838,7 @@ final_score = base_score
 | `cluster_scoring.neutral_full_area_ratio` | 0.35 | 中性簇面积达到该比例后惩罚满额 |
 | `cluster_scoring.background_penalty_strength` | 0.35 | 背景提示图对最终簇的惩罚强度 |
 | `cluster_scoring.min_cluster_area_ratio` | 0.002 | 极小簇软门控阈值，避免单点噪声胜出 |
+| `cluster_scoring.skin_penalty_strength` | 0.0 | 肤色惩罚强度 [0, 1]。基于 RGB 色序 R>G>B 检测偏红暖色调肤色簇并压制。0=禁用；建议值 0.3~0.6 |
 
 调参方向：
 
@@ -808,6 +846,7 @@ final_score = base_score
 - 彩色小块过度胜出：提高 `area_power`，降低 `peak_weight_weight` 或 `saturation_bonus`。
 - 白底/黑底仍常胜：提高 `neutral_penalty_strength` 或 `background_penalty_strength`。
 - 有色背景应该代表整体但被压掉：降低 `background_penalty_strength`，或提高 `saturation_bonus`。
+- 肤色簇（角色面部/身体）常胜出成为印象色：增大 `skin_penalty_strength`（建议从 0.3 开始），查看 `cluster_diagnostics.json` 中 `skin_likeness` 确认检测生效。
 
 ---
 

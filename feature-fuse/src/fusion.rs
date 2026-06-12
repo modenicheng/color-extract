@@ -402,6 +402,8 @@ pub struct ClusterDiagnostics {
     pub saturation_multiplier: f64,
     pub neutral_penalty: f64,
     pub background_penalty: f64,
+    pub skin_likeness: f64,
+    pub skin_penalty: f64,
     pub min_area_gate: f64,
     pub final_score: f64,
     pub legacy_weight_sum_score: f64,
@@ -755,6 +757,13 @@ fn score_cluster(
         1.0
     };
 
+    let skin_likeness_val = skin_likeness(rgb);
+    let skin_penalty = if cfg.enabled && cfg.skin_penalty_strength > 0.0 {
+        (1.0 - cfg.skin_penalty_strength.clamp(0.0, 1.0) * skin_likeness_val).clamp(0.02, 1.0)
+    } else {
+        1.0
+    };
+
     let min_area_gate = if cfg.enabled && cfg.min_cluster_area_ratio > 0.0 {
         smoothstep(
             cfg.min_cluster_area_ratio * 0.5,
@@ -766,7 +775,7 @@ fn score_cluster(
     };
 
     let final_score = if cfg.enabled {
-        base_score * saturation_multiplier * neutral_penalty * background_penalty * min_area_gate
+        base_score * saturation_multiplier * neutral_penalty * background_penalty * skin_penalty * min_area_gate
     } else {
         weight_sum
     };
@@ -790,6 +799,8 @@ fn score_cluster(
         saturation_multiplier,
         neutral_penalty,
         background_penalty,
+        skin_likeness: skin_likeness_val,
+        skin_penalty,
         min_area_gate,
         final_score,
         legacy_weight_sum_score: weight_sum,
@@ -861,6 +872,36 @@ fn rgb_saturation(rgb: [f64; 3]) -> f64 {
     } else {
         ((max_c - min_c) / max_c).clamp(0.0, 1.0)
     }
+}
+
+/// 肤色似然度 [0, 1]：基于 RGB 色序 R>G>B（偏红暖色调）+ 饱和度/亮度门控。
+/// 值越高说明该颜色越像人类肤色。
+fn skin_likeness(rgb: [f64; 3]) -> f64 {
+    let (r, g, b) = (rgb[0], rgb[1], rgb[2]);
+    let max_c = r.max(g).max(b);
+    let min_c = r.min(g).min(b);
+    if max_c < 0.06 {
+        return 0.0; // 太暗，不可能是肤色
+    }
+
+    // 核心条件：R > G > B（偏红的暖色调）
+    let rg_norm = ((r - g) / max_c).max(0.0); // R 必须领先 G
+    let gb_norm = ((g - b) / max_c).max(0.0); // G 必须领先 B
+
+    // R 需显著领先 G，G 略领先 B 即可
+    let rg_score = smoothstep(0.02, 0.10, rg_norm);
+    let gb_score = smoothstep(0.0, 0.05, gb_norm);
+
+    // 饱和度门控：太灰的颜色不是肤色
+    let spread = (max_c - min_c) / max_c.max(1e-6);
+    let sat_gate = smoothstep(0.04, 0.10, spread);
+
+    // 亮度门控：太暗（阴影/曝光不足）或太亮（过曝）排除
+    let lightness = (r + g + b) / 3.0;
+    let light_gate =
+        smoothstep(0.06, 0.12, lightness) * (1.0 - smoothstep(0.90, 0.98, lightness));
+
+    (rg_score * gb_score * sat_gate * light_gate).clamp(0.0, 1.0)
 }
 
 fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {

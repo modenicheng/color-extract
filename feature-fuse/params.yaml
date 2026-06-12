@@ -130,16 +130,16 @@ segment_fusion:
   segment:
     min_region_area: 70
     min_cluster_area_ratio: 0.002
-    edge_threshold: 0.005
+    edge_threshold: 0.0005
     edge_split_strength: 0.25
-    edge_gamma: 0.8
+    edge_gamma: 0.6
     edge_merge_strength: 0.12
     color_merge_distance: 8.0
     small_region_color_distance: 20.0
     merge_small_regions: true
     morph_open_radius: 0
     morph_close_radius: 1
-    color_weight: 1.0
+    color_weight: 0.8
     edge_weight: 2.5
   region_scoring:
     border_band: 8
@@ -159,13 +159,25 @@ segment_fusion:
     subject_protect_strength: 0.55
     # 设为 0 时 segment 不直接改写传统背景图，而是通过第 19D segment_foreground 参与融合。
     background_correction_strength: 0.00
+    # region color 现在用下列组件加权选 Top-1，而不是面积 × 显著度硬连乘。
     area_power: 0.55
+    region_area_weight: 0.18
+    region_subject_weight: 0.28
+    region_saliency_mean_weight: 0.18
+    region_saliency_peak_weight: 0.20
+    region_foreground_weight: 0.20
+    region_center_weight: 0.08
+    region_saturation_weight: 0.12
     color_stability_weight: 0.30
+    bg_probability_penalty_strength: 0.45
     # 大面积、低方差、低饱和区域更像平铺背景，会被压低 region color 排名。
     bg_flat_penalty_strength: 0.55
     bg_flat_area_min_ratio: 0.08
     bg_flat_area_full_ratio: 0.35
     bg_flat_sat_threshold: 0.28
+    # 对“主体置信度 × 区域显著度”高的区域给轻微奖励，帮助第三色块选到主体最突出部分。
+    subject_prominence_bonus_strength: 0.20
+    min_region_area_ratio: 0.0015
     # 大面积但高饱和、色相接近红/绿的色块更可能是有效主色，给轻微奖励。
     vivid_rg_bonus_strength: 0.12
     vivid_rg_sat_threshold: 0.45
@@ -266,7 +278,7 @@ impression_background:
   neutral_suppression_strength: 0.95
   neutral_sat_threshold: 0.12
   neutral_black_l_threshold: 18.0
-  neutral_white_l_threshold: 87.0
+  neutral_white_l_threshold: 85.0
   neutral_light_softness: 10.0
   neutral_bg_probability_threshold: 0.45
   neutral_min_effective_area_ratio: 0.05
@@ -330,11 +342,11 @@ impression:
   # area_power < 1 会压缩面积优势，避免白底/黑底/大面积浅色残留凭总权重胜出。
   cluster_scoring:
     enabled: true
-    area_power: 0.45
+    area_power: 0.65
     mean_weight_power: 1.0
     peak_weight_power: 0.80
     area_weight: 0.45
-    mean_weight_weight: 0.35
+    mean_weight_weight: 0.75
     peak_weight_weight: 0.20
     saturation_bonus: 0.25
     neutral_penalty_strength: 0.75
@@ -343,6 +355,9 @@ impression:
     neutral_full_area_ratio: 0.35
     background_penalty_strength: 0.35
     min_cluster_area_ratio: 0.002
+    # 肤色惩罚：动漫角色肤色常大面积+高权重，容易胜出成为"印象色"，
+    # 但这通常不是用户想要的主题色。增大此值使肤色簇更难胜出。
+    skin_penalty_strength: 0.6   # [0, 1], 0=禁用
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 12. 动态特征权重 — 按特征自身统计量（方差/范围/峰度）动态调整 multiplier
